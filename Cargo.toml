@@ -1,0 +1,42 @@
+[package]
+name = "broom"
+version = "0.2.0"
+edition = "2024"
+description = "A fast, exact disk-space explorer for macOS with a live sunburst chart, built with GPUI"
+license = "MIT"
+repository = "https://github.com/henrydennis/petal"
+readme = "README.md"
+keywords = ["disk-usage", "macos", "gpui", "sunburst", "apfs"]
+categories = ["filesystem", "visualization"]
+rust-version = "1.95"
+publish = false
+
+[dependencies]
+gpui = { git = "https://github.com/gpui-ce/gpui-ce", rev = "98e9aacd9bed5e705a20c6b165002c1320581823", package = "gpui-ce" }
+gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", rev = "98e9aacd9bed5e705a20c6b165002c1320581823", package = "gpui_ce_platform", features = ["font-kit"] }
+gpui_ce_elements = { git = "https://github.com/gpui-ce/gpui-ce", rev = "98e9aacd9bed5e705a20c6b165002c1320581823", package = "gpui_ce_elements" }
+rayon = "1.10"
+libc = "0.2"
+palette = "0.7"
+trash = "5"
+security-framework = "3"
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
+objc2-app-kit = { version = "0.3", features = ["NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSMenu", "NSMenuItem", "NSApplication", "objc2-core-foundation", "NSView", "NSWindow", "NSGraphics", "NSVisualEffectView", "NSScreen", "NSEvent", "NSResponder"] }
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSGeometry"] }
+
+[features]
+# Dev aid: script the window and save PNGs or record a video of it (see src/snapshot.rs).
+snapshot = ["gpui/test-support", "gpui_platform/test-support", "dep:image"]
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+strip = true

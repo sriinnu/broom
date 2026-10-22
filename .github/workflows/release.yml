@@ -1,0 +1,51 @@
+# A release is a signed tag `vX.Y.Z` pushed to main. This builds Broom.app and
+# the DMG, signs and notarizes them when the Developer ID secrets are set, and
+# attaches the DMG to a GitHub release created from that tag.
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check the tag matches Cargo.toml
+        run: |
+          v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          [[ "${GITHUB_REF_NAME}" == "v${v}" ]] || { echo "tag ${GITHUB_REF_NAME} != Cargo.toml ${v}"; exit 1; }
+      - name: Import the Developer ID certificate
+        if: ${{ secrets.DEVELOPER_ID_P12 != '' }}
+        env:
+          P12_BASE64: ${{ secrets.DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          echo "$P12_BASE64" | base64 --decode > /tmp/cert.p12
+          security create-keychain -p ci build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p ci build.keychain
+          security import /tmp/cert.p12 -k build.keychain -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci build.keychain
+          rm /tmp/cert.p12
+      - name: Store notary credentials
+        if: ${{ secrets.NOTARY_APPLE_ID != '' }}
+        env:
+          APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          APP_PASSWORD: ${{ secrets.NOTARY_APP_PASSWORD }}
+        run: xcrun notarytool store-credentials broom-notary --apple-id "$APPLE_ID" --team-id "$TEAM_ID" --password "$APP_PASSWORD"
+      - name: Build, sign and notarize
+        env:
+          BROOM_SIGN_ID: ${{ secrets.DEVELOPER_ID_SIGN_ID }}
+          BROOM_NOTARY_PROFILE: ${{ secrets.NOTARY_APPLE_ID != '' && 'broom-notary' || '' }}
+        run: scripts/bundle.sh --dmg
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/Broom.dmg \
+            --verify-tag --title "Broom ${GITHUB_REF_NAME#v}" --generate-notes
