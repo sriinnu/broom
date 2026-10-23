@@ -20,12 +20,14 @@ APP=dist/Broom.app
 
 # Rust embeds source paths (for panic messages); keep this machine's paths out of the
 # shipped binary. Its own target directory, so the different flags don't force normal
-# builds to recompile.
+# builds to recompile. It sits inside whatever target directory cargo is configured
+# with (a shared one outside the checkout, if set), so the repo stays small.
 # (The encoded form, separated by 0x1f, copes with spaces in the paths.)
+TARGET=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/broom-bundle
 export CARGO_ENCODED_RUSTFLAGS="--remap-path-prefix=$HOME=/build"$'\x1f'"--remap-path-prefix=$PWD=/broom"
-cargo build --release --target-dir target/bundle
+cargo build --release --target-dir "$TARGET"
 rm -rf "$APP" && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp target/bundle/release/broom "$APP/Contents/MacOS/broom"
+cp "$TARGET/release/broom" "$APP/Contents/MacOS/broom"
 [[ -f packaging/AppIcon.icns ]] || python3 scripts/make-icon.py packaging
 cp packaging/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 sed -e "s/__VERSION__/$VERSION/" -e "s/__BUILD__/$BUILD/" packaging/Info.plist > "$APP/Contents/Info.plist"
