@@ -727,7 +727,7 @@ pub static LAUNCHED: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 /// handle, not the app; `reopen` puts the same entity back in a new window.
 static BROOM_ENTITY: std::sync::OnceLock<Entity<Broom>> = std::sync::OnceLock::new();
 
-/// "Open Broom" and the ✿ click tap this from AppKit's side of the world (see
+/// "Open Broom" and the 🧹 click tap this from AppKit's side of the world (see
 /// `menubar`'s `MenuBridge`); `arm_reopen`'s task drains the other end.
 static OPEN_TX: std::sync::OnceLock<mpsc::Sender<Request>> = std::sync::OnceLock::new();
 
@@ -736,7 +736,7 @@ static OPEN_TX: std::sync::OnceLock<mpsc::Sender<Request>> = std::sync::OnceLock
 pub enum Request {
     /// Bring the main window back.
     Open,
-    /// Toggle the search-and-clean panel under the ✿.
+    /// Toggle the search-and-clean panel under the 🧹.
     Panel,
 }
 
@@ -811,7 +811,7 @@ pub fn open_requested() {
     request(Request::Open);
 }
 
-/// The ✿ was clicked: toggle the search panel. Main thread; never blocks.
+/// The 🧹 was clicked: toggle the search panel. Main thread; never blocks.
 pub fn panel_requested() {
     request(Request::Panel);
 }
@@ -880,7 +880,7 @@ fn reopen(cx: &mut App) {
 
 /// Dev aid, `BROOM_MB_SELFTEST=1`: run the residency through its real paths
 /// and report. Closes the window the way the red button does, checks the app
-/// (and the ✿ item's `MenuBar`) survived, fires the actual `openBroom:`
+/// (and the 🧹 item's `MenuBar`) survived, fires the actual `openBroom:`
 /// action, and checks the window came back with the right frost. Prints one
 /// `selftest:` line per check and quits — for the harness, not for users.
 pub fn arm_selftest(cx: &mut App) {
@@ -1089,7 +1089,7 @@ impl Broom {
                 this.menubar.as_ref().unwrap().update(startup, &volume_lines(&this.volumes));
             }
         }
-        // The rail's numbers (and the ✿'s) stay honest whether or not the extra is on.
+        // The rail's numbers (and the 🧹's) stay honest whether or not the extra is on.
         this._menubar_watch = Some(this.watch_menubar(cx));
         if access == Access::Missing {
             this._access_watch = Some(this.watch_access(cx));
@@ -1103,7 +1103,7 @@ impl Broom {
         this
     }
 
-    /// Where the ✿ is, for hanging the panel under it.
+    /// Where the 🧹 is, for hanging the panel under it.
     pub fn menubar_anchor(&self) -> Option<(f32, f32, f32)> {
         let mtm = MainThreadMarker::new()?;
         self.menubar.as_ref().and_then(|bar| bar.anchor(mtm))
@@ -2075,7 +2075,7 @@ impl Broom {
         cx.notify();
     }
 
-    /// Toggle the menu-bar ✿ icon on or off at runtime. Creating the status
+    /// Toggle the menu-bar 🧹 icon on or off at runtime. Creating the status
     /// item requires the main thread, which the UI thread is.
     fn toggle_menubar(&mut self, cx: &mut Context<Self>) {
         self.settings.menubar = !self.settings.menubar;
@@ -2694,7 +2694,7 @@ impl Broom {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(div().text_sm().child("Show menu-bar ✿ icon"))
+                    .child(div().text_sm().child("Show menu-bar 🧹 icon"))
                     .child(
                         div()
                             .id("toggle-menubar")
