@@ -42,6 +42,7 @@ use crate::motion;
 use crate::scan::{self, CloudRoot, Kind, Progress, Tree, Volume, format_count, format_size};
 use crate::secrets;
 use crate::settings::{self, Settings};
+use crate::trashcan;
 use crate::sunburst::{self, Geometry, Hit, Segment, Target};
 
 actions!(broom, [
@@ -96,6 +97,8 @@ struct ReviewState {
     frees: HashMap<usize, u64>,
     /// A delete is running; the buttons wait.
     working: bool,
+    /// The items tumbling into the bin while the delete runs.
+    drop: Option<Rc<trashcan::Drop>>,
 }
 const ZOOM_DURATION: Duration = Duration::from_millis(450);
 
@@ -2228,7 +2231,7 @@ impl Broom {
         let items = r.collector.clone();
         let paths: Vec<(usize, PathBuf)> = items.iter().map(|&ix| (ix, r.tree.path_of(ix))).collect();
         self.context_menu = None;
-        self.review = Some(ReviewState { items, frees: HashMap::new(), working: false });
+        self.review = Some(ReviewState { items, frees: HashMap::new(), working: false, drop: None });
         // Per-item savings, one at a time in the background; dropped if the card closed.
         cx.spawn(async move |this, cx| {
             for (ix, path) in paths {
@@ -2277,8 +2280,18 @@ impl Broom {
         let paths: Vec<PathBuf> = items.iter().map(|&ix| r.tree.path_of(ix)).collect();
         let paths_after = paths.clone();
         let freed = r.collector_frees.get().unwrap_or_else(|| r.collected_size());
+        let sizes: Vec<(scan::Kind, u64)> = items.iter().map(|&ix| (r.tree.nodes[ix].kind, r.tree.nodes[ix].size)).collect();
+        let drop = trashcan::Drop::new(trashcan::Item::from_sizes(&sizes), freed);
+        if let Some(review) = &mut self.review {
+            review.drop = Some(drop.clone());
+        }
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move { trash::delete_all(&paths) }).await;
+            let result = cx.background_spawn(async move { trashcan::send(&paths) }).await;
+            if result.is_ok() {
+                // Let the last item land and the lid close before the card goes.
+                drop.settle();
+                cx.background_executor().timer(drop.remaining()).await;
+            }
             this.update(cx, |this, cx| {
                 this.review = None;
                 match result {
@@ -4587,6 +4600,21 @@ impl Broom {
             None => format!("{count} · {} selected · working out what's shared…", format_size(size)),
         };
 
+        let stage = review.drop.as_ref().filter(|_| review.working).map(|drop| {
+            let (landed, bytes) = drop.landed();
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(div().h(px(230.)).w_full().child(trashcan::stage(drop.clone())))
+                .child(div().text_xs().text_color(rgb(MUTED)).text_center().child(format!(
+                    "{landed} of {} in the bin · {}",
+                    drop.total(),
+                    format_size(bytes)
+                )))
+        });
+        let list = if stage.is_some() { div().id("review-list") } else { list };
+
         div()
             .id("review-card")
             .w(px(560.))
@@ -4609,6 +4637,7 @@ impl Broom {
                     .child(div().text_xs().text_color(rgb(MUTED)).child(subtitle)),
             )
             .child(list)
+            .children(stage)
             .when_some(shared, |d, shared| {
                 d.child(
                     div()

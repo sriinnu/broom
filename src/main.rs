@@ -18,6 +18,7 @@ mod settings;
 #[cfg(feature = "snapshot")]
 mod snapshot;
 mod sunburst;
+mod trashcan;
 mod cli;
 
 use std::path::PathBuf;
