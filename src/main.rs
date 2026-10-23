@@ -18,6 +18,7 @@ mod settings;
 #[cfg(feature = "snapshot")]
 mod snapshot;
 mod sunburst;
+mod cli;
 
 use std::path::PathBuf;
 
@@ -33,6 +34,10 @@ actions!(broom, [Quit]);
 fn main() {
     let _ = app::LAUNCHED.set(std::time::Instant::now());
     let args: Vec<String> = std::env::args().collect();
+    // Headless subcommands for scripts and agents: `broom scan|find|clean|trash|help`.
+    if let Some(code) = cli::run(&args) {
+        std::process::exit(code);
+    }
     // Headless benchmark: `broom --bench-scan <path> [runs]`
     if args.get(1).map(String::as_str) == Some("--bench-scan") {
         let path = PathBuf::from(args.get(2).expect("path required"));
