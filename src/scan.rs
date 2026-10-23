@@ -192,6 +192,51 @@ impl Tree {
             }
         }
     }
+
+    /// Replace `ix`'s contents with `fresh`, a scan of the same folder taken just
+    /// now (the Trash after Finder emptied it, say). The old descendants are
+    /// detached like `remove` does, the fresh ones appended, and the ancestors
+    /// grow or shrink by the difference. `ix` itself keeps its index, so a focus
+    /// or a finding that points at it stays valid.
+    pub fn graft(&mut self, ix: usize, fresh: &Tree) {
+        let mut stack: Vec<usize> = std::mem::take(&mut self.nodes[ix].children);
+        while let Some(c) = stack.pop() {
+            self.nodes[c].parent = None;
+            stack.extend(self.nodes[c].children.iter().copied());
+        }
+        let base = self.nodes.len();
+        // fresh's root becomes `ix`; every other fresh node lands at base + (its index - 1).
+        let map = |f: usize| if f == Tree::ROOT { ix } else { base + f - 1 };
+        for node in fresh.nodes.iter().skip(1) {
+            self.nodes.push(Node {
+                name: node.name.clone(),
+                size: node.size,
+                kind: node.kind,
+                parent: node.parent.map(map),
+                children: node.children.iter().map(|&c| map(c)).collect(),
+                items: node.items,
+            });
+        }
+        let root = &fresh.nodes[Tree::ROOT];
+        let (old_size, old_items) = (self.nodes[ix].size, self.nodes[ix].items);
+        self.nodes[ix].children = root.children.iter().map(|&c| map(c)).collect();
+        self.nodes[ix].size = root.size;
+        self.nodes[ix].items = root.items;
+        let mut cur = self.nodes[ix].parent;
+        while let Some(p) = cur {
+            let node = &mut self.nodes[p];
+            node.size = (node.size + root.size).saturating_sub(old_size);
+            node.items = (node.items + root.items).saturating_sub(old_items);
+            cur = node.parent;
+        }
+        let mut cur = self.nodes[ix].parent;
+        while let Some(p) = cur {
+            sort_children(&mut self.nodes, p);
+            cur = self.nodes[p].parent;
+        }
+        // New names: the lowercase index is rebuilt on next use.
+        self.index = Arc::new(std::sync::OnceLock::new());
+    }
 }
 
 #[derive(Default)]
@@ -987,6 +1032,51 @@ mod tests {
             tree.nodes[someone].children.iter().map(|&c| (tree.nodes[c].name.to_string(), tree.nodes[c].size)).collect::<Vec<_>>()
         };
         assert_eq!(downloads(&plain), downloads(&spliced));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Grafting a fresh scan of one folder: its subtree is replaced, the ancestors
+    /// move by the difference, and the folder keeps its index.
+    #[test]
+    fn graft_replaces_a_subtree() {
+        let dir = std::env::temp_dir().join(format!("broom-graft-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        write(&dir.join("keep/a.bin"), 3 << 20);
+        write(&dir.join(".Trash/old.dmg"), 2 << 20);
+        write(&dir.join(".Trash/nested/b.bin"), 1 << 20);
+        let mut tree = scan(&dir, &Progress::default(), &[], OUTLINE_DEPTH);
+        let total = tree.nodes[Tree::ROOT].size;
+        let trash = tree.find(&dir.join(".Trash")).unwrap();
+        let old_dmg = tree.find(&dir.join(".Trash/old.dmg")).unwrap();
+        assert_eq!(tree.nodes[trash].size, 3 << 20);
+
+        // Finder empties it, then something new lands.
+        fs::remove_dir_all(dir.join(".Trash")).unwrap();
+        write(&dir.join(".Trash/new.zip"), 5 << 20);
+        let fresh = scan(&dir.join(".Trash"), &Progress::default(), &[], OUTLINE_DEPTH);
+        tree.graft(trash, &fresh);
+
+        assert_eq!(tree.find(&dir.join(".Trash")), Some(trash), "keeps its index");
+        assert_eq!(tree.nodes[trash].size, 5 << 20);
+        assert_eq!(tree.nodes[trash].items, 1);
+        assert_eq!(tree.nodes[Tree::ROOT].size, total - (3 << 20) + (5 << 20));
+        assert!(tree.nodes[old_dmg].parent.is_none(), "old contents are detached");
+        assert!(tree.find(&dir.join(".Trash/old.dmg")).is_none());
+        let new_zip = tree.find(&dir.join(".Trash/new.zip")).unwrap();
+        assert_eq!(tree.path_of(new_zip), dir.join(".Trash/new.zip"));
+        // Biggest first: .Trash (5 MB) now outranks keep (3 MB).
+        assert_eq!(tree.nodes[Tree::ROOT].children[0], trash);
+        // The name index covers the new nodes.
+        assert_eq!(tree.names().name(new_zip), "new.zip");
+
+        // Emptied for good: a zero-size graft.
+        fs::remove_dir_all(dir.join(".Trash")).unwrap();
+        fs::create_dir(dir.join(".Trash")).unwrap();
+        let empty = scan(&dir.join(".Trash"), &Progress::default(), &[], OUTLINE_DEPTH);
+        tree.graft(trash, &empty);
+        assert_eq!(tree.nodes[trash].size, 0);
+        assert_eq!(tree.nodes[Tree::ROOT].size, total - (3 << 20));
+        assert_eq!(tree.nodes[Tree::ROOT].children[0], tree.find(&dir.join("keep")).unwrap());
         fs::remove_dir_all(&dir).unwrap();
     }
 

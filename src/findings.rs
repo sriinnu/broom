@@ -94,6 +94,30 @@ pub fn prune_after_removal(findings: &mut Vec<Finding>, tree: &Tree) {
     findings.sort_by(|a, b| b.size.cmp(&a.size));
 }
 
+/// After one catalog location was re-scanned and grafted into the tree (the Trash,
+/// when Finder empties it): recompute that finding from the live tree, adding it when
+/// the folder grew past the threshold and dropping it when it shrank below.
+pub fn refresh_location(findings: &mut Vec<Finding>, tree: &Tree, bases: &Bases, title: &str) {
+    let Some(category) = CATALOG.iter().find(|c| c.title == title) else { return };
+    let Some(path) = bases.locate(category) else { return };
+    let Some(ix) = tree.find(&path) else { return };
+    let size = tree.nodes[ix].size;
+    findings.retain(|f| f.title != title);
+    if size >= MIN_SIZE {
+        findings.push(Finding {
+            id: next_id(),
+            title: category.title,
+            blurb: category.blurb.to_string(),
+            safety: category.safety,
+            size,
+            path: Some(path),
+            nodes: vec![ix],
+            pending: false,
+        });
+    }
+    findings.sort_by(|a, b| b.size.cmp(&a.size));
+}
+
 /// A hotspot's result as reported mid-scan.
 #[derive(Clone, Debug)]
 pub struct Early {
@@ -241,6 +265,37 @@ fn user_temp_dir() -> Option<PathBuf> {
 mod tests {
     use super::*;
     use crate::scan::{Node, Progress, scan};
+
+    /// The Trash finding follows the folder: gone when Finder empties it, back when
+    /// something big lands in it.
+    #[test]
+    fn trash_finding_follows_the_folder() {
+        let dir = std::env::temp_dir().join(format!("broom-refresh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let home = dir.join("Users/someone");
+        write(&home.join(".Trash/old.dmg"), 300_000);
+        write(&home.join("Documents/notes.txt"), 5000);
+        let bases = Bases { home: Some(home.clone()), user_temp: None };
+        let mut tree = scan(&dir, &Progress::default(), &[], 2);
+        let mut findings = from_tree_min(&tree, &bases, 1);
+        assert!(findings.iter().any(|f| f.title == "Trash"));
+
+        std::fs::remove_dir_all(home.join(".Trash")).unwrap();
+        std::fs::create_dir(home.join(".Trash")).unwrap();
+        let trash = tree.find(&home.join(".Trash")).unwrap();
+        tree.graft(trash, &scan(&home.join(".Trash"), &Progress::default(), &[], 2));
+        refresh_location(&mut findings, &tree, &bases, "Trash");
+        assert!(findings.iter().all(|f| f.title != "Trash"), "empty Trash is no finding");
+
+        write(&home.join(".Trash/big.iso"), MIN_SIZE as usize + 1);
+        tree.graft(trash, &scan(&home.join(".Trash"), &Progress::default(), &[], 2));
+        refresh_location(&mut findings, &tree, &bases, "Trash");
+        let f = findings.iter().find(|f| f.title == "Trash").expect("back");
+        assert_eq!(f.size, tree.nodes[trash].size);
+        assert_eq!(f.nodes, vec![trash]);
+        assert!(!f.pending);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn write(path: &Path, bytes: usize) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

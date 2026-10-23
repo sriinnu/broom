@@ -435,6 +435,28 @@ struct Results {
 }
 
 impl Results {
+    /// After the tree changed under the lists (nodes detached or grafted): drop
+    /// everything that pointed into it and start the chart's settle animation.
+    /// Returns whether the cleanup plan still has items, so its "frees" figure
+    /// needs recomputing.
+    fn tree_changed(&mut self) -> bool {
+        let tree = self.tree.clone();
+        self.collector.retain(|&c| tree.nodes[c].parent.is_some());
+        let recompute = !self.collector.is_empty();
+        self.collector_frees.set(if recompute { None } else { Some(0) });
+        // The tree changed under any in-flight search: bump the version so its
+        // result (computed on the old tree) is dropped instead of re-installing
+        // stale cards.
+        self.search_version += 1;
+        self.matches = None;
+        self.ask = AskState::Idle;
+        self.chart_hover = None;
+        self.list_hover = None;
+        self.anim_start = clock::now();
+        self.relayout();
+        recompute
+    }
+
     fn new(tree: Tree, findings: Vec<Finding>, elapsed: Duration, requested_root: PathBuf, color_by: ColorBy, sort: SortBy) -> Self {
         let mut results = Self {
             tree: Arc::new(tree),
@@ -1026,6 +1048,8 @@ pub struct Broom {
     /// The menu-bar extra: flower + startup-disk fill, volumes in its menu.
     menubar: Option<menubar::MenuBar>,
     _menubar_watch: Option<Task<()>>,
+    /// Re-reads the Trash when Finder changes it; see `watch_trash`.
+    _trash_watch: Option<Task<()>>,
     /// Bumped every time Settings opens, so a keychain result from a previous
     /// session can't land on the rows of the current one.
     settings_epoch: u64,
@@ -1072,6 +1096,7 @@ impl Broom {
             modal_focus: cx.focus_handle(),
             menubar: None,
             _menubar_watch: None,
+            _trash_watch: None,
             settings_epoch: 0,
             busy: false,
             settings,
@@ -1091,6 +1116,7 @@ impl Broom {
         }
         // The rail's numbers (and the 🧹's) stay honest whether or not the extra is on.
         this._menubar_watch = Some(this.watch_menubar(cx));
+        this._trash_watch = Some(this.watch_trash(cx));
         if access == Access::Missing {
             this._access_watch = Some(this.watch_access(cx));
         }
@@ -1160,25 +1186,94 @@ impl Broom {
                 Arc::make_mut(&mut r.tree).remove(ix);
             }
             findings::prune_after_removal(&mut r.findings, &r.tree);
-            let tree = r.tree.clone();
-            r.collector.retain(|&c| tree.nodes[c].parent.is_some());
-            recompute = !r.collector.is_empty();
-            r.collector_frees.set(if recompute { None } else { Some(0) });
-            // The tree changed under any in-flight search: bump the
-            // version so its result (computed on the old tree) is
-            // dropped instead of re-installing stale cards.
-            r.search_version += 1;
-            r.matches = None;
-            r.ask = AskState::Idle;
-            r.chart_hover = None;
-            r.list_hover = None;
-            r.anim_start = clock::now();
-            r.relayout();
+            recompute = r.tree_changed();
         }
         if recompute {
             self.collector_changed(cx);
         }
         cx.notify();
+    }
+
+    /// Finder changed the Trash (emptied it, or something landed there, including
+    /// what Broom itself moved): re-scan just that folder off the UI thread, graft
+    /// it into the tree, refresh the Trash finding and the disks' free space. A
+    /// cheap stat of the folder every 2 s decides whether any of that is needed.
+    fn watch_trash(&self, cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            let trash_dir = home_dir().join(".Trash");
+            let mut seen: Option<(std::time::SystemTime, usize)> = None;
+            loop {
+                cx.background_executor().timer(Duration::from_secs(2)).await;
+                // Only while a tree that holds the Trash is on screen; otherwise the
+                // next scan reads it fresh anyway.
+                let Ok(Some((root, excludes, outline_depth))) = this.update(cx, |this, _| {
+                    let settings = (this.settings.exclude_paths(), this.settings.outline_depth);
+                    match &this.screen {
+                        Screen::Results(r) if r.tree.find(&trash_dir).is_some() => Some((r.tree.root_path.clone(), settings.0, settings.1)),
+                        _ => None,
+                    }
+                }) else {
+                    seen = None;
+                    continue;
+                };
+                let fingerprint = cx
+                    .background_spawn({
+                        let trash_dir = trash_dir.clone();
+                        async move {
+                            let modified = std::fs::metadata(&trash_dir).and_then(|m| m.modified()).ok()?;
+                            let entries = std::fs::read_dir(&trash_dir).ok()?.count();
+                            Some((modified, entries))
+                        }
+                    })
+                    .await;
+                let Some(fingerprint) = fingerprint else { continue };
+                if seen == Some(fingerprint) {
+                    continue;
+                }
+                let first_look = seen.is_none();
+                seen = Some(fingerprint);
+                if first_look {
+                    // The scan that just finished already read it.
+                    continue;
+                }
+                let (fresh, volumes) = cx
+                    .background_spawn({
+                        let trash_dir = trash_dir.clone();
+                        async move {
+                            let fresh = scan::scan(&trash_dir, &scan::Progress::default(), &excludes, outline_depth);
+                            (fresh, scan::volumes())
+                        }
+                    })
+                    .await;
+                let bases = findings::Bases::for_root(&root);
+                let recompute = this
+                    .update(cx, |this, cx| {
+                        this.context_menu = None;
+                        if let Some(bar) = &this.menubar {
+                            bar.update(startup_fraction(&volumes), &volume_lines(&volumes));
+                        }
+                        this.volumes = volumes;
+                        let mut recompute = false;
+                        if let Some(r) = this.results() {
+                            if let Some(ix) = r.tree.find(&trash_dir) {
+                                if r.tree.is_ancestor_or_self(ix, r.focus) {
+                                    r.focus = ix;
+                                }
+                                Arc::make_mut(&mut r.tree).graft(ix, &fresh);
+                                findings::prune_after_removal(&mut r.findings, &r.tree);
+                                findings::refresh_location(&mut r.findings, &r.tree, &bases, "Trash");
+                                recompute = r.tree_changed();
+                            }
+                        }
+                        cx.notify();
+                        recompute
+                    })
+                    .unwrap_or(false);
+                if recompute {
+                    this.update(cx, |this, cx| this.collector_changed(cx)).ok();
+                }
+            }
+        })
     }
 
     /// Keep the disks' numbers honest wherever they're shown: the rail always,
