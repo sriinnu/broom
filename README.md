@@ -150,11 +150,37 @@ or drag it onto the plan. The search box at the top takes the same questions the
 
 You can also pass a folder on the command line: `broom ~/Library`.
 
+## From a terminal, or an agent
+
+The same scanner, ask engine and safety rules, without the window. Everything goes to the Trash,
+never deleted outright; `clean` and `trash` are dry runs unless you add `--yes`. `--json` puts one
+object on stdout for a program to read, progress stays on stderr.
+
+```bash
+broom scan                                  # home folder: totals, biggest folders, findings
+broom scan ~/Library --json
+broom find node modules and dist folders    # the groups the panel would show, with every path
+broom find worktrees --root ~/Code --json
+broom clean node modules                    # dry run: what would go, and what it frees
+broom clean node modules --yes              # safe, precise groups only
+broom clean old dmg in downloads --all --yes   # include "review" groups too
+broom trash ~/Projects/x/node_modules ~/Library/Caches/pnpm --yes
+```
+
+`find --json` returns `groups[]` with `label`, `safety` (`safe` or `review`), `precise` (a name,
+finding, extension or worktree match rather than a substring or kind guess), `bytes` and
+`folders[]` of `{path, bytes, items}`. An agent reads that, decides, and calls `trash` with the
+exact paths it wants; `clean --yes` is the shortcut for "everything precise and safe". `--ask` on
+`find` or `clean` also consults the configured reader and reports its answer. The CLI refuses the
+disk root, system folders, volumes, your home folder and its standard folders, and any Trash.
+Exit codes: 0 done, 1 something failed (partial failures list what didn't move), 2 usage.
+
 ## How it works
 
 ```
 src/
 ├── main.rs        app setup, menus, key bindings, command-line flags
+├── cli.rs         headless scan / find / clean / trash for scripts and agents
 ├── app.rs         the window: disks rail, folder list, sunburst, findings, cleanup plan, review
 ├── panel.rs       the menu-bar panel: query, groups, ticks, confirm, trash
 ├── menubar.rs     the NSStatusItem (objc2), its menu, and where to hang the panel
