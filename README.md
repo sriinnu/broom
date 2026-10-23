@@ -71,6 +71,8 @@ for the usual space hogs, and a cleanup plan you stage with checkboxes before an
   folders Finder refuses (very large `node_modules`, say) go through NSFileManager instead.
 - **It keeps up with Finder.** Empty the Trash, or drop something into it, and the Trash finding,
   the folder's slice and the disks' free space follow within a couple of seconds, no rescan.
+- **Five looks.** **Settings › Appearance** switches between Classic (the default), Darkroom,
+  Ledger, Console and Bloom. All but Classic come in light and dark, and can follow macOS.
 - **Safe by design.** Broom only reads file metadata, never downloads cloud-only files, never
   sends anything over the network except the optional classifier calls, and has no analytics.
 - **The investigator.** While a scan runs, a small ligne-claire investigator sniffs around with a
@@ -202,7 +204,8 @@ src/
 ├── live.rs        live per-folder totals during a scan, snapshots
 ├── disk.rs        the startup disk's APFS container: exact slices for the other volumes
 ├── findings.rs    the catalog of known space hogs and how to recognise them
-├── sunburst.rs    layout in angle space, painting, polar hit-testing, the six-hue ladder
+├── sunburst.rs    layout in angle space, painting, polar hit-testing
+├── theme.rs       the five themes: palettes for light and dark, radius, fonts, the six-hue ladder
 ├── settings.rs    settings file, state dir (migrates from the Petal days)
 ├── secrets.rs     keychain
 ├── onboarding.rs  first run and Full Disk Access detection

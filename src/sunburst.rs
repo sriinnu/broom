@@ -7,6 +7,7 @@ use std::f32::consts::TAU;
 use gpui::{Bounds, Hsla, PathBuilder, Pixels, Point, Window, hsla, point, px};
 
 use crate::scan::{Kind, Tree};
+use crate::theme;
 
 pub const MAX_DEPTH: usize = 6;
 /// Children thinner than this are merged into a single "smaller objects" segment.
@@ -22,10 +23,8 @@ pub enum Target {
     Small { parent: usize },
 }
 
-/// The categorical ladder the icon, the rail and the chart share: rose, lime,
-/// periwinkle, gold, teal, tangerine. Validated to stay apart for every kind
-/// of colour vision and to carry dark text.
-pub const HUES: [u32; 6] = [0xd85164, 0x699f08, 0x5a76e4, 0xbc8900, 0x009c9c, 0xd26c28];
+/// How many hues the ladder has (`theme::hue`); folders past it go grey.
+pub const HUES: usize = 6;
 
 /// Children of the focused folder past the sixth share one neutral grey.
 pub const NO_GROUP: usize = usize::MAX;
@@ -76,7 +75,7 @@ fn layout_children(tree: &Tree, ix: usize, depth: usize, start: f32, end: f32, g
         let child = &tree.nodes[child_ix];
         let width = (span as f64 * child.size as f64 / total) as f32;
         let child_group = if depth == 1 {
-            let g = if rank < HUES.len() { rank } else { NO_GROUP };
+            let g = if rank < HUES { rank } else { NO_GROUP };
             rank += 1;
             g
         } else {
@@ -107,7 +106,7 @@ fn layout_children(tree: &Tree, ix: usize, depth: usize, start: f32, end: f32, g
 
 /// One of the six hues as HSL, so lightness can step with depth.
 pub fn hue_color(index: usize) -> Hsla {
-    rgb_to_hsla(HUES[index % HUES.len()])
+    rgb_to_hsla(theme::hue(index))
 }
 
 /// A plain sRGB → HSL conversion; gpui's `Hsla` is in turns.
@@ -138,9 +137,9 @@ pub fn rgb_to_hsla(color: u32) -> Hsla {
 pub fn base_color(segment: &Segment) -> Hsla {
     let d = (segment.depth - 1) as f32;
     match (segment.target, segment.kind) {
-        (Target::Small { .. }, _) => hsla(0.0, 0.0, 0.38, 1.0),
-        (_, Kind::Other) => hsla(0.0, 0.0, 0.45, 1.0),
-        _ if segment.group == NO_GROUP => hsla(0.0, 0.0, (0.48 + d * 0.04).min(0.7), 1.0),
+        (Target::Small { .. }, _) => grey(0.38),
+        (_, Kind::Other) => grey(0.45),
+        _ if segment.group == NO_GROUP => grey((0.48 + d * 0.04).min(0.7)),
         (_, Kind::File) => {
             let base = hue_color(segment.group);
             hsla(hue_turns(&base), base.saturation * 0.35, (base.lightness + 0.10 + d * 0.04).min(0.8), 1.0)
@@ -152,6 +151,13 @@ pub fn base_color(segment: &Segment) -> Hsla {
     }
 }
 
+/// A neutral at `dark_lightness` on a dark ground; on a light one the same
+/// step from white, so the tail stays quieter than the hues either way.
+fn grey(dark_lightness: f32) -> Hsla {
+    let l = if theme::is_dark() { dark_lightness } else { 0.5 + dark_lightness * 0.45 };
+    hsla(0.0, 0.0, l, 1.0)
+}
+
 fn hue_turns(color: &Hsla) -> f32 {
     color.hue.into_positive_degrees() / 360.0
 }
@@ -161,7 +167,12 @@ pub fn highlight(color: Hsla) -> Hsla {
 }
 
 pub fn dim(color: Hsla) -> Hsla {
-    hsla(hue_turns(&color), color.saturation * 0.8, color.lightness * 0.82, 1.0)
+    hsla(hue_turns(&color), color.saturation * 0.8, recede(color.lightness, 0.18), 1.0)
+}
+
+/// `lightness` moved `by` of the way toward the ground: darker on dark, lighter on light.
+fn recede(lightness: f32, by: f32) -> f32 {
+    if theme::is_dark() { lightness * (1.0 - by) } else { lightness + (1.0 - lightness) * by }
 }
 
 /// Highlight for colours that are already vivid (colouring by kind): lighter, without
@@ -172,7 +183,7 @@ pub fn lift(color: Hsla) -> Hsla {
 
 /// Much quieter than `dim`, so one highlighted group stands out from everything else.
 pub fn fade(color: Hsla) -> Hsla {
-    hsla(hue_turns(&color), color.saturation * 0.3, color.lightness * 0.6, 1.0)
+    hsla(hue_turns(&color), color.saturation * 0.3, recede(color.lightness, 0.4), 1.0)
 }
 
 #[derive(Clone, Copy, Debug)]
