@@ -139,6 +139,15 @@ pub fn install(window: &mut Window, cx: &mut Context<Broom>) {
                     })
                     .ok();
                 }
+                // `about`: open the About card (the settings panel's About tab).
+                "about" => {
+                    cx.update(|window, cx| {
+                        if let Some(broom) = crate::app::broom() {
+                            broom.update(cx, |b, cx| b.show_about(&crate::app::About, window, cx));
+                        }
+                    })
+                    .ok();
+                }
                 "quit" => {
                     cx.update(|_, cx| cx.quit()).ok();
                     return;
