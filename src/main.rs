@@ -19,6 +19,7 @@ mod single;
 #[cfg(feature = "snapshot")]
 mod snapshot;
 mod sunburst;
+mod theme;
 mod trashcan;
 mod cli;
 

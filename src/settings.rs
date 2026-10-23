@@ -17,6 +17,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::theme::{Appearance, ThemeName};
+
 /// Bumped only when a change can't be expressed as a new defaulted field.
 pub const SCHEMA: u32 = 1;
 
@@ -81,6 +83,9 @@ pub struct Settings {
     pub color_by: ColorBy,
     /// Show the 🧹 extra in the menu bar.
     pub menubar: bool,
+    /// How Broom looks, and whether it follows macOS between light and dark.
+    pub theme: ThemeName,
+    pub appearance: Appearance,
     /// Scan this when Broom opens with no folder argument.
     pub default_root: String,
     /// The last folder actually scanned, so a relaunch lands where you were.
@@ -98,6 +103,8 @@ impl Default for Settings {
             banner_seconds: 8,
             color_by: ColorBy::Folder,
             menubar: true,
+            theme: ThemeName::Classic,
+            appearance: Appearance::Auto,
             default_root: DEFAULT_ROOT.to_string(),
             last_root: None,
         }
@@ -196,6 +203,11 @@ pub fn save(settings: &Settings) -> Result<(), String> {
     std::fs::rename(&temp, &path).map_err(|e| e.to_string())
 }
 
+/// Held by every test that points `BROOM_STATE_DIR` somewhere: the variable
+/// is process-wide and the tests run in parallel.
+#[cfg(test)]
+pub(crate) static STATE_DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,9 +215,7 @@ mod tests {
     /// Point `BROOM_STATE_DIR` at a fresh folder for the duration of a test.
     /// These tests share the process environment, so they run under one lock.
     fn with_temp_dir<T>(name: &str, body: impl FnOnce() -> T) -> T {
-        use std::sync::Mutex;
-        static LOCK: Mutex<()> = Mutex::new(());
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         let dir = std::env::temp_dir().join(format!("broom-settings-{name}"));
         let _ = std::fs::remove_dir_all(&dir);

@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use gpui::{
     AnyElement, App, AsyncApp, Bounds, ClipboardItem, Context, CursorStyle, DispatchPhase, Entity, FocusHandle, Focusable,
     FontWeight, HapticFeedbackStyle, HitboxBehavior, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PathPromptOptions, Pixels, Point, Rgba, ScrollHandle, ScrollStrategy, SharedString, Stateful, Task, TextAlign, TextRun,
+    PathPromptOptions, Pixels, Point, Rgba, ScrollHandle, ScrollStrategy, SharedString, Stateful, Subscription, Task, TextAlign, TextRun,
     TitlebarOptions, UniformListScrollHandle, BorderStyle, Window, WindowBackgroundAppearance, WindowBounds, WindowHandle,
     WindowOptions, actions, anchored, canvas, deferred, div, point, prelude::*, px, quad, relative, rgb, size,
     uniform_list, img, Image, ImageFormat,
@@ -42,6 +42,7 @@ use crate::motion;
 use crate::scan::{self, CloudRoot, Kind, Progress, Tree, Volume, format_count, format_size};
 use crate::secrets;
 use crate::settings::{self, Settings};
+use crate::theme::{self, colors};
 use crate::trashcan;
 use crate::sunburst::{self, Geometry, Hit, Segment, Target};
 
@@ -51,21 +52,7 @@ actions!(broom, [
     SelectNext, SelectPrev, OpenSelected, ToggleStaged, CloseReview
 ]);
 
-const BG: u32 = 0x1c1d21;
-const PANEL: u32 = 0x232529;
-const CARD: u32 = 0x2a2c31;
-const CARD_HOVER: u32 = 0x33363c;
-const BORDER: u32 = 0x34363c;
-const TEXT: u32 = 0xe8e9ec;
-const MUTED: u32 = 0x8d919a;
-const ACCENT: u32 = 0x4f9dff;
-const DANGER: u32 = 0xe5484d;
 
-/// "Safe to delete" green and "review first" amber, shared by findings and chips.
-const SAFE: u32 = 0x3fb950;
-const REVIEW: u32 = 0xd29922;
-
-const ROW_HEIGHT: f32 = 30.0;
 const RAIL_WIDTH: f32 = 200.0;
 const NAV_WIDTH: f32 = 300.0;
 const CLEANUP_WIDTH: f32 = 300.0;
@@ -209,12 +196,12 @@ impl Render for Tip {
         div()
             .px_2()
             .py_1()
-            .rounded_md()
-            .bg(rgb(0x141519))
+            .rounded(theme::radius(6.))
+            .bg(rgb(colors().tooltip))
             .border_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(colors().border))
             .text_xs()
-            .text_color(rgb(TEXT))
+            .text_color(rgb(colors().text))
             .child(self.0.clone())
     }
 }
@@ -225,10 +212,10 @@ impl Render for DraggedItem {
             .px_3()
             .py_1()
             .rounded_full()
-            .bg(rgb(ACCENT))
-            .text_color(rgb(0xffffff))
+            .bg(rgb(colors().accent))
+            .text_color(rgb(colors().on_accent))
             .text_sm()
-            .font_family(".SystemUIFont")
+            .font_family(theme::current().font)
             .child(format!("{}  ·  {}", self.name, format_size(self.size)))
     }
 }
@@ -1070,6 +1057,8 @@ pub struct Broom {
     _menubar_watch: Option<Task<()>>,
     /// Re-reads the Trash when Finder changes it; see `watch_trash`.
     _trash_watch: Option<Task<()>>,
+    /// Repaints in the other palette when macOS flips between light and dark.
+    _appearance_watch: Option<Subscription>,
     /// Bumped every time Settings opens, so a keychain result from a previous
     /// session can't land on the rows of the current one.
     settings_epoch: u64,
@@ -1117,6 +1106,7 @@ impl Broom {
             menubar: None,
             _menubar_watch: None,
             _trash_watch: None,
+            _appearance_watch: None,
             settings_epoch: 0,
             busy: false,
             settings,
@@ -1137,6 +1127,8 @@ impl Broom {
         // The rail's numbers (and the 🧹's) stay honest whether or not the extra is on.
         this._menubar_watch = Some(this.watch_menubar(cx));
         this._trash_watch = Some(this.watch_trash(cx));
+        theme::apply(this.settings.theme, this.settings.appearance, cx);
+        this._appearance_watch = Some(cx.observe_window_appearance(window, |this, _, cx| this.restyle(cx)));
         if access == Access::Missing {
             this._access_watch = Some(this.watch_access(cx));
         }
@@ -1363,7 +1355,7 @@ impl Broom {
         let actions = div().flex().gap_2().justify_end().mt_1();
         let actions = match self.access {
             Access::JustGranted => actions.child(
-                primary_button("access-rescan", "Rescan", ACCENT).on_click(cx.listener(|this, _, window, cx| {
+                primary_button("access-rescan", "Rescan", colors().accent).on_click(cx.listener(|this, _, window, cx| {
                     this.access = Access::Granted;
                     this.rescan(&Rescan, window, cx);
                 })),
@@ -1374,7 +1366,7 @@ impl Broom {
                     cx.notify();
                 })))
                 .child(
-                    primary_button("access-open", "Open Privacy Settings", ACCENT)
+                    primary_button("access-open", "Open Privacy Settings", colors().accent)
                         .on_click(cx.listener(|_, _, _, cx| cx.open_url(onboarding::FULL_DISK_ACCESS_SETTINGS))),
                 ),
         };
@@ -1383,17 +1375,17 @@ impl Broom {
                 .mx_3()
                 .mb_2()
                 .p_3()
-                .rounded_lg()
-                .bg(rgb(CARD))
+                .rounded(theme::radius(8.))
+                .bg(rgb(colors().card))
                 .border_1()
-                .border_color(rgb(ACCENT))
+                .border_color(rgb(colors().accent))
                 .flex()
                 .flex_col()
                 .gap_1()
                 .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
-                .child(div().text_xs().text_color(rgb(MUTED)).child(body))
+                .child(div().text_xs().text_color(rgb(colors().muted)).child(body))
                 .when(self.access == Access::Missing, |d| {
-                    d.child(div().text_xs().text_color(rgb(MUTED)).child("In Settings, turn on Broom (use + to add it if it isn't listed)."))
+                    d.child(div().text_xs().text_color(rgb(colors().muted)).child("In Settings, turn on Broom (use + to add it if it isn't listed)."))
                 })
                 .child(actions),
         )
@@ -1597,7 +1589,7 @@ impl Broom {
         cx.notify();
     }
 
-    fn open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
         // Never under a native sheet (trash confirm, folder picker): the parent
         // window is disabled for its duration and our card would be dead on arrival.
         if self.busy {
@@ -2190,6 +2182,28 @@ impl Broom {
         cx.notify();
     }
 
+    fn set_theme(&mut self, name: theme::ThemeName, cx: &mut Context<Self>) {
+        self.settings.theme = name;
+        let _ = settings::save(&self.settings);
+        self.restyle(cx);
+    }
+
+    fn set_appearance(&mut self, appearance: theme::Appearance, cx: &mut Context<Self>) {
+        self.settings.appearance = appearance;
+        let _ = settings::save(&self.settings);
+        self.restyle(cx);
+    }
+
+    /// Bring the palette in line with Settings and macOS. The chart's swatches
+    /// are worked out at layout time, so a finished scan lays out again.
+    fn restyle(&mut self, cx: &mut Context<Self>) {
+        theme::apply(self.settings.theme, self.settings.appearance, cx);
+        if let Some(r) = self.results() {
+            r.relayout();
+        }
+        cx.notify();
+    }
+
     /// Toggle the menu-bar 🧹 icon on or off at runtime. Creating the status
     /// item requires the main thread, which the UI thread is.
     fn toggle_menubar(&mut self, cx: &mut Context<Self>) {
@@ -2475,9 +2489,9 @@ impl Render for Broom {
             .size_full()
             .flex()
             .flex_col()
-            .bg(to_hsla(BG))
-            .text_color(rgb(TEXT))
-            .font_family(".SystemUIFont")
+            .bg(to_hsla(colors().bg))
+            .text_color(rgb(colors().text))
+            .font_family(theme::current().font)
             .text_sm()
             .child(self.render_toolbar(cx))
             .child(body)
@@ -2495,9 +2509,9 @@ impl Render for Broom {
                         .max_w(px(420.))
                         .px_4()
                         .py_2()
-                        .rounded_lg()
-                        .bg(rgb(DANGER))
-                        .text_color(rgb(0xffffff))
+                        .rounded(theme::radius(8.))
+                        .bg(rgb(colors().danger))
+                        .text_color(rgb(colors().on_danger))
                         .cursor_pointer()
                         .child(error)
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -2563,10 +2577,10 @@ impl Broom {
             .items_center()
             .gap_0p5()
             .p_0p5()
-            .rounded_lg()
+            .rounded(theme::radius(8.))
             .border_1()
-            .border_color(rgb(BORDER))
-            .bg(rgb(BG))
+            .border_color(rgb(colors().border))
+            .bg(rgb(colors().bg))
             .text_xs();
         for (label, tab) in [
             ("Settings", PanelTab::Keys),
@@ -2579,12 +2593,12 @@ impl Broom {
                     .id(("panel-tab", tab as usize))
                     .px_2()
                     .py_0p5()
-                    .rounded_md()
+                    .rounded(theme::radius(6.))
                     .cursor_pointer()
                     .when(selected, |d| {
-                        d.bg(rgb(CARD_HOVER)).text_color(rgb(TEXT)).font_weight(FontWeight::MEDIUM)
+                        d.bg(rgb(colors().card_hover)).text_color(rgb(colors().text)).font_weight(FontWeight::MEDIUM)
                     })
-                    .when(!selected, |d| d.text_color(rgb(MUTED)).hover(|s| s.text_color(rgb(TEXT))))
+                    .when(!selected, |d| d.text_color(rgb(colors().muted)).hover(|s| s.text_color(rgb(colors().text))))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if let Some(p) = &mut this.modal {
                             p.tab = tab;
@@ -2625,10 +2639,10 @@ impl Broom {
             .w(px(520.))
             .max_h(px(560.))
             .p_4()
-            .rounded_xl()
-            .bg(rgb(PANEL))
+            .rounded(theme::radius(12.))
+            .bg(rgb(colors().panel))
             .border_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(colors().border))
             .shadow_lg()
             .flex()
             .flex_col()
@@ -2706,7 +2720,7 @@ impl Broom {
                         point(px(left + 9.), px(track_top + track_h - 1.)),
                     ),
                     px(4.),
-                    gpui::hsla(0., 0., 1., 0.05),
+                    theme::overlay(0.05),
                     px(0.),
                     gpui::hsla(0., 0., 0., 0.),
                     BorderStyle::default(),
@@ -2715,7 +2729,7 @@ impl Broom {
                 window.paint_quad(quad(
                     Bounds::from_corners(point(px(left + 2.), px(thumb_top)), point(px(left + 8.), px(thumb_top + thumb_h))),
                     px(3.),
-                    gpui::hsla(0., 0., 1., if held { 0.38 } else { 0.22 }),
+                    theme::overlay(if held { 0.38 } else { 0.22 }),
                     px(0.),
                     gpui::hsla(0., 0., 0., 0.),
                     BorderStyle::default(),
@@ -2782,18 +2796,18 @@ impl Broom {
                 div()
                     .px_3()
                     .py_2()
-                    .rounded_lg()
-                    .bg(rgb(0x2a2818))
+                    .rounded(theme::radius(8.))
+                    .bg(theme::alpha(colors().review, 0.12))
                     .border_1()
-                    .border_color(rgb(0x4a4428))
+                    .border_color(theme::alpha(colors().review, 0.35))
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(div().text_xs().text_color(rgb(0xc8b86e)).child(
+                    .child(div().text_xs().text_color(rgb(colors().review)).child(
                         "Your settings file was damaged. It has been moved aside; Broom started with defaults.",
                     ))
                     .child(
-                        div().text_xs().text_color(rgb(MUTED)).child(format!("Location: {}", salvaged.display())),
+                        div().text_xs().text_color(rgb(colors().muted)).child(format!("Location: {}", salvaged.display())),
                     ),
             );
         }
@@ -2812,10 +2826,10 @@ impl Broom {
                 div()
                     .px_3()
                     .py_2()
-                    .rounded_lg()
-                    .bg(rgb(CARD))
+                    .rounded(theme::radius(8.))
+                    .bg(rgb(colors().card))
                     .border_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(rgb(colors().border))
                     .flex()
                     .items_center()
                     .justify_between()
@@ -2823,18 +2837,18 @@ impl Broom {
                     .child(
                         div()
                             .id("toggle-menubar")
-                            .rounded_md()
+                            .rounded(theme::radius(6.))
                             .px_2()
                             .py_0p5()
                             .text_xs()
                             .cursor_pointer()
                             .when(self.settings.menubar, |d| {
-                                d.bg(rgb(ACCENT)).text_color(rgb(0xffffff))
+                                d.bg(rgb(colors().accent)).text_color(rgb(colors().on_accent))
                             })
                             .when(!self.settings.menubar, |d| {
-                                d.bg(rgb(CARD_HOVER)).text_color(rgb(MUTED))
+                                d.bg(rgb(colors().card_hover)).text_color(rgb(colors().muted))
                             })
-                            .hover(|d| d.text_color(rgb(TEXT)))
+                            .hover(|d| d.text_color(rgb(colors().text)))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.toggle_menubar(cx);
                             }))
@@ -2845,10 +2859,10 @@ impl Broom {
                 div()
                     .px_3()
                     .py_2()
-                    .rounded_lg()
-                    .bg(rgb(CARD))
+                    .rounded(theme::radius(8.))
+                    .bg(rgb(colors().card))
                     .border_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(rgb(colors().border))
                     .flex()
                     .items_center()
                     .justify_between()
@@ -2866,15 +2880,89 @@ impl Broom {
                                 };
                                 div()
                                     .id(("color-by", ix))
-                                    .rounded_md()
+                                    .rounded(theme::radius(6.))
                                     .px_2()
                                     .py_0p5()
                                     .text_xs()
                                     .cursor_pointer()
-                                    .when(active, |d| d.bg(rgb(ACCENT)).text_color(rgb(0xffffff)))
-                                    .when(!active, |d| d.text_color(rgb(MUTED)).hover(|s| s.text_color(rgb(TEXT))))
+                                    .when(active, |d| d.bg(rgb(colors().accent)).text_color(rgb(colors().on_accent)))
+                                    .when(!active, |d| d.text_color(rgb(colors().muted)).hover(|s| s.text_color(rgb(colors().text))))
                                     .on_click(cx.listener(move |this, _, _, cx| this.set_color_by(target, cx)))
                                     .child(label)
+                            }),
+                        ),
+                    ),
+            );
+
+        // --- Appearance --------------------------------------------------------
+        let chip = |id: (&'static str, usize), label: &'static str, active: bool| {
+            div()
+                .id(id)
+                .rounded(theme::radius(6.))
+                .px_2()
+                .py_0p5()
+                .text_xs()
+                .cursor_pointer()
+                .when(active, |d| d.bg(rgb(colors().accent)).text_color(rgb(colors().on_accent)))
+                .when(!active, |d| d.text_color(rgb(colors().muted)).hover(|s| s.text_color(rgb(colors().text))))
+                .child(label)
+        };
+        let has_light = self.settings.theme.has_light();
+        card = card
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(div().font_weight(FontWeight::MEDIUM).child("Appearance")),
+            )
+            .child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .rounded(theme::radius(8.))
+                    .bg(rgb(colors().card))
+                    .border_1()
+                    .border_color(rgb(colors().border))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(div().text_sm().child("Theme"))
+                    .child(
+                        div().flex().gap_1().children(theme::ThemeName::ALL.iter().enumerate().map(|(ix, &name)| {
+                            chip(("theme", ix), name.label(), self.settings.theme == name)
+                                .on_click(cx.listener(move |this, _, _, cx| this.set_theme(name, cx)))
+                        })),
+                    ),
+            )
+            .child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .rounded(theme::radius(8.))
+                    .bg(rgb(colors().card))
+                    .border_1()
+                    .border_color(rgb(colors().border))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(div().text_sm().child("Light or dark"))
+                            .when(!has_light, |d| {
+                                d.child(div().text_xs().text_color(rgb(colors().muted)).child("Classic is dark only"))
+                            }),
+                    )
+                    .child(
+                        div().flex().gap_1().when(!has_light, |d| d.opacity(0.4)).children(
+                            theme::Appearance::ALL.iter().enumerate().map(|(ix, &mode)| {
+                                chip(("appearance", ix), mode.label(), self.settings.appearance == mode)
+                                    .when(has_light, |d| {
+                                        d.on_click(cx.listener(move |this, _, _, cx| this.set_appearance(mode, cx)))
+                                    })
+                                    .when(!has_light, |d| d.cursor_default())
                             }),
                         ),
                     ),
@@ -2893,10 +2981,10 @@ impl Broom {
                 div()
                     .px_3()
                     .py_2()
-                    .rounded_lg()
-                    .bg(rgb(CARD))
+                    .rounded(theme::radius(8.))
+                    .bg(rgb(colors().card))
                     .border_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(rgb(colors().border))
                     .flex()
                     .items_center()
                     .justify_between()
@@ -2907,13 +2995,13 @@ impl Broom {
                                 let active = self.settings.outline_depth == d;
                                 div()
                                     .id(("outline-depth", d))
-                                    .rounded_md()
+                                    .rounded(theme::radius(6.))
                                     .px_2()
                                     .py_0p5()
                                     .text_xs()
                                     .cursor_pointer()
-                                    .when(active, |d| d.bg(rgb(ACCENT)).text_color(rgb(0xffffff)))
-                                    .when(!active, |d| d.text_color(rgb(MUTED)).hover(|s| s.text_color(rgb(TEXT))))
+                                    .when(active, |d| d.bg(rgb(colors().accent)).text_color(rgb(colors().on_accent)))
+                                    .when(!active, |d| d.text_color(rgb(colors().muted)).hover(|s| s.text_color(rgb(colors().text))))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.settings.outline_depth = d;
                                         let _ = settings::save(&this.settings);
@@ -2928,10 +3016,10 @@ impl Broom {
                 div()
                     .px_3()
                     .py_2()
-                    .rounded_lg()
-                    .bg(rgb(CARD))
+                    .rounded(theme::radius(8.))
+                    .bg(rgb(colors().card))
                     .border_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(rgb(colors().border))
                     .flex()
                     .items_center()
                     .justify_between()
@@ -2942,13 +3030,13 @@ impl Broom {
                                 let active = self.settings.banner_seconds == s as u64;
                                 div()
                                     .id(("banner-sec", s))
-                                    .rounded_md()
+                                    .rounded(theme::radius(6.))
                                     .px_2()
                                     .py_0p5()
                                     .text_xs()
                                     .cursor_pointer()
-                                    .when(active, |d| d.bg(rgb(ACCENT)).text_color(rgb(0xffffff)))
-                                    .when(!active, |d| d.text_color(rgb(MUTED)).hover(|s| s.text_color(rgb(TEXT))))
+                                    .when(active, |d| d.bg(rgb(colors().accent)).text_color(rgb(colors().on_accent)))
+                                    .when(!active, |d| d.text_color(rgb(colors().muted)).hover(|s| s.text_color(rgb(colors().text))))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.settings.banner_seconds = s as u64;
                                         let _ = settings::save(&this.settings);
@@ -2965,10 +3053,10 @@ impl Broom {
             div()
                 .px_3()
                 .py_2()
-                .rounded_lg()
-                .bg(rgb(CARD))
+                .rounded(theme::radius(8.))
+                .bg(rgb(colors().card))
                 .border_1()
-                .border_color(rgb(BORDER))
+                .border_color(rgb(colors().border))
                 .flex()
                 .flex_col()
                 .gap_2()
@@ -2983,12 +3071,12 @@ impl Broom {
                                 .items_center()
                                 .justify_between()
                                 .gap_2()
-                                .child(div().text_xs().font_family("Menlo").truncate().child(path.clone()))
+                                .child(div().text_xs().font_family(theme::current().mono).truncate().child(path.clone()))
                                 .child(
                                     div()
                                         .id(("exclude-remove", ix))
                                         .text_xs()
-                                        .text_color(rgb(DANGER))
+                                        .text_color(rgb(colors().danger))
                                         .cursor_pointer()
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.settings.excludes.retain(|p| *p != path);
@@ -3008,16 +3096,19 @@ impl Broom {
                             .child(
                                 text_input("exclude-path")
                                     .placeholder("e.g. ~/Downloads")
+                                    .placeholder_color(theme::overlay(0.5))
+                                    .caret_color(theme::input_caret())
+                                    .selection_color(theme::input_selection())
                                     .state(s.exclude_input.downgrade())
                                     .caret_blink_interval_500ms()
                                     .w_full()
                                     .h(px(28.))
                                     .px_2()
                                     .min_h_auto()
-                                    .rounded_md()
+                                    .rounded(theme::radius(6.))
                                     .border_1()
-                                    .border_color(rgb(BORDER))
-                                    .bg(rgb(BG))
+                                    .border_color(rgb(colors().border))
+                                    .bg(rgb(colors().bg))
                                     .text_size(px(12.)),
                             ),
                     )
@@ -3052,12 +3143,12 @@ impl Broom {
                     .gap_0p5()
                     .child(div().font_weight(FontWeight::MEDIUM).child("API keys"))
                     .child(
-                        div().text_xs().text_color(rgb(MUTED)).child(
+                        div().text_xs().text_color(rgb(colors().muted)).child(
                             "Stored in your login keychain. Broom shows only the last characters — never the key itself.",
                         ),
                     )
                     .child(
-                        div().text_xs().text_color(rgb(MUTED)).child(
+                        div().text_xs().text_color(rgb(colors().muted)).child(
                             "A fallback reader needs no key — it answers whenever the main one can't.",
                         ),
                     ),
@@ -3070,7 +3161,7 @@ impl Broom {
                 .flex()
                 .flex_col()
                 .gap_1()
-                .child(div().text_xs().text_color(rgb(MUTED)).child("Check another key name:"))
+                .child(div().text_xs().text_color(rgb(colors().muted)).child("Check another key name:"))
                 .child(
                     div().flex().gap_2().items_center().child(
                         div()
@@ -3079,16 +3170,19 @@ impl Broom {
                             .child(
                                 text_input("custom-key")
                                     .placeholder("e.g. openai")
+                                    .placeholder_color(theme::overlay(0.5))
+                                    .caret_color(theme::input_caret())
+                                    .selection_color(theme::input_selection())
                                     .state(s.custom.downgrade())
                                     .caret_blink_interval_500ms()
                                     .w_full()
                                     .h(px(28.))
                                     .px_2()
                                     .min_h_auto()
-                                    .rounded_md()
+                                    .rounded(theme::radius(6.))
                                     .border_1()
-                                    .border_color(rgb(BORDER))
-                                    .bg(rgb(BG))
+                                    .border_color(rgb(colors().border))
+                                    .bg(rgb(colors().bg))
                                     .text_size(px(12.)),
                             ),
                     )
@@ -3098,7 +3192,7 @@ impl Broom {
                 ),
         );
         if let Some(note) = &s.note {
-            card = card.child(div().text_xs().text_color(rgb(MUTED)).child(note.clone()));
+            card = card.child(div().text_xs().text_color(rgb(colors().muted)).child(note.clone()));
         }
         card
     }
@@ -3122,11 +3216,11 @@ impl Broom {
                     .flex()
                     .flex_col()
                     .child(div().truncate().font_weight(FontWeight::MEDIUM).child(row.title.clone()))
-                    .child(div().text_xs().text_color(rgb(MUTED)).truncate().child(hint)),
+                    .child(div().text_xs().text_color(rgb(colors().muted)).truncate().child(hint)),
             );
         match &row.status {
             KeyStatus::Loading => {
-                head = head.child(div().text_xs().text_color(rgb(MUTED)).child("checking keychain…"));
+                head = head.child(div().text_xs().text_color(rgb(colors().muted)).child("checking keychain…"));
             }
             KeyStatus::Missing => {
                 head = head.child(
@@ -3136,7 +3230,7 @@ impl Broom {
             }
             KeyStatus::Set { masked } => {
                 head = head
-                    .child(div().text_xs().font_family("Menlo").text_color(rgb(MUTED)).child(masked.clone()))
+                    .child(div().text_xs().font_family(theme::current().mono).text_color(rgb(colors().muted)).child(masked.clone()))
                     .child(
                         button(("key-edit", ix), "Update")
                             .on_click(cx.listener(move |this, _, _, cx| this.edit_key(ix, cx))),
@@ -3152,10 +3246,10 @@ impl Broom {
             .id(("key-row", ix))
             .px_3()
             .py_2()
-            .rounded_lg()
-            .bg(rgb(CARD))
+            .rounded(theme::radius(8.))
+            .bg(rgb(colors().card))
             .border_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(colors().border))
             .flex()
             .flex_col()
             .gap_1()
@@ -3167,26 +3261,26 @@ impl Broom {
                 div()
                     .px_3()
                     .py_2()
-                    .rounded_lg()
-                    .bg(rgb(0x1e2840))
+                    .rounded(theme::radius(8.))
+                    .bg(theme::alpha(colors().accent, 0.12))
                     .border_1()
-                    .border_color(rgb(0x2a3d5c))
+                    .border_color(theme::alpha(colors().accent, 0.35))
                     .flex()
                     .flex_col()
                     .gap_2()
                     .child(
-                        div().text_xs().text_color(rgb(0x8bb8ff)).child(
+                        div().text_xs().text_color(rgb(colors().accent)).child(
                             "1. Copy the API key to your clipboard  (⌘C)",
                         ),
                     )
                     .child(
-                        div().text_xs().text_color(rgb(0x8bb8ff)).child(
+                        div().text_xs().text_color(rgb(colors().accent)).child(
                             "2. Click \"Paste from Clipboard\" below — Broom reads it from there, never shows it on screen.",
                         ),
                     )
                     .child(
                         div().flex().gap_2().items_center().justify_end().child(
-                            primary_button(("key-paste", ix), "Paste from Clipboard", ACCENT)
+                            primary_button(("key-paste", ix), "Paste from Clipboard", colors().accent)
                                 .on_click(cx.listener(move |this, _, _, cx| this.paste_key(ix, cx))),
                         )
                         .child(
@@ -3198,7 +3292,7 @@ impl Broom {
         }
         if matches!(row.status, KeyStatus::Saving) {
             line = line.child(
-                div().text_xs().text_color(rgb(MUTED)).child("working in the keychain\u{2026}"),
+                div().text_xs().text_color(rgb(colors().muted)).child("working in the keychain\u{2026}"),
             );
         }
         line
@@ -3212,20 +3306,20 @@ impl Broom {
             .gap_1()
             .pt_2()
             .child(img(ABOUT_MARK.clone()).size(px(72.)).flex_none())
-            .child(div().text_3xl().font_weight(FontWeight::BOLD).child("Broom"))
-            .child(div().text_color(rgb(MUTED)).child(format!("Version {}", env!("CARGO_PKG_VERSION"))))
+            .child(div().text_3xl().font_family(theme::current().display).font_weight(FontWeight::BOLD).child("Broom"))
+            .child(div().text_color(rgb(colors().muted)).child(format!("Version {}", env!("CARGO_PKG_VERSION"))))
             .child(div().mt_2().text_sm().child("A disk-space explorer for macOS."))
             .child(
                 div()
                     .px_6()
                     .text_center()
                     .text_xs()
-                    .text_color(rgb(MUTED))
+                    .text_color(rgb(colors().muted))
                     .child("Ask in plain language — the reader judges the words, code matches the files, you confirm the list."),
             )
             .child(div().mt_3().text_sm().child("Made by Srinivas Pendela"))
             .child(
-                div().text_xs().text_color(rgb(MUTED)).child("© 2026 Srinivas Pendela · Built with Rust and GPUI"),
+                div().text_xs().text_color(rgb(colors().muted)).child("© 2026 Srinivas Pendela · Built with Rust and GPUI"),
             )
     }
 
@@ -3246,9 +3340,9 @@ impl Broom {
                 .id(id)
                 .px_2()
                 .py_1()
-                .rounded_md()
+                .rounded(theme::radius(6.))
                 .cursor_pointer()
-                .hover(|s| s.bg(rgb(CARD_HOVER)))
+                .hover(|s| s.bg(rgb(colors().card_hover)))
                 .child(label)
         };
         let mut items = vec![
@@ -3316,15 +3410,15 @@ impl Broom {
                         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
                         .w(px(230.))
                         .p_1()
-                        .rounded_lg()
-                        .bg(rgb(PANEL))
+                        .rounded(theme::radius(8.))
+                        .bg(rgb(colors().panel))
                         .border_1()
-                        .border_color(rgb(BORDER))
+                        .border_color(rgb(colors().border))
                         .shadow_lg()
                         .flex()
                         .flex_col()
                         .gap_0p5()
-                        .child(div().px_2().py_1().text_xs().text_color(rgb(MUTED)).truncate().child(name))
+                        .child(div().px_2().py_1().text_xs().text_color(rgb(colors().muted)).truncate().child(name))
                         .children(items),
                 ),
         )
@@ -3337,7 +3431,7 @@ fn button_base(id: impl Into<gpui::ElementId>, label: impl Into<SharedString>) -
         .id(id)
         .px_3()
         .py_1()
-        .rounded_md()
+        .rounded(theme::radius(6.))
         .border_1()
         .cursor_pointer()
         .active(|s| s.opacity(0.8))
@@ -3348,16 +3442,16 @@ fn button_base(id: impl Into<gpui::ElementId>, label: impl Into<SharedString>) -
 
 fn button(id: impl Into<gpui::ElementId>, label: impl Into<SharedString>) -> Stateful<gpui::Div> {
     button_base(id, label)
-        .bg(rgb(CARD))
-        .border_color(rgb(BORDER))
-        .hover(|s| s.bg(rgb(CARD_HOVER)))
+        .bg(rgb(colors().card))
+        .border_color(rgb(colors().border))
+        .hover(|s| s.bg(rgb(colors().card_hover)))
 }
 
 fn primary_button(id: impl Into<gpui::ElementId>, label: impl Into<SharedString>, color: u32) -> Stateful<gpui::Div> {
     button_base(id, label)
         .bg(rgb(color))
         .border_color(rgb(color))
-        .text_color(rgb(0xffffff))
+        .text_color(rgb(theme::on(color)))
         .font_weight(FontWeight::MEDIUM)
         .hover(move |s| s.bg(lighten(rgb(color))))
 }
@@ -3426,8 +3520,8 @@ impl Broom {
             .pl(px(84.))
             .pr_3()
             .border_b_1()
-            .border_color(rgb(BORDER))
-            .bg(to_hsla(PANEL))
+            .border_color(rgb(colors().border))
+            .bg(to_hsla(colors().panel))
             .on_mouse_down(MouseButton::Left, |event, window, _| {
                 if event.click_count == 2 {
                     window.zoom_window();
@@ -3451,21 +3545,21 @@ impl Broom {
                 for (i, &ix) in chain.iter().enumerate() {
                     let is_last = i + 1 == chain.len();
                     if i > 0 {
-                        crumbs = crumbs.child(div().text_color(rgb(MUTED)).child("›"));
+                        crumbs = crumbs.child(div().text_color(rgb(colors().muted)).child("›"));
                     }
                     crumbs = crumbs.child(
                         div()
                             .id(("crumb", ix))
                             .px_1p5()
                             .py_0p5()
-                            .rounded_md()
+                            .rounded(theme::radius(6.))
                             .flex_shrink(1.)
                             .min_w(px(24.))
                             .truncate()
                             .when(is_last, |d| d.font_weight(FontWeight::SEMIBOLD))
-                            .when(!is_last, |d| d.text_color(rgb(MUTED)).flex_shrink_0())
+                            .when(!is_last, |d| d.text_color(rgb(colors().muted)).flex_shrink_0())
                             .cursor_pointer()
-                            .hover(|s| s.bg(rgb(CARD_HOVER)))
+                            .hover(|s| s.bg(rgb(colors().card_hover)))
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if let Some(r) = this.results() {
@@ -3483,6 +3577,9 @@ impl Broom {
                     div().on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(
                         text_input("query")
                             .placeholder("Find by name, or ask…")
+                            .placeholder_color(theme::overlay(0.5))
+                            .caret_color(theme::input_caret())
+                            .selection_color(theme::input_selection())
                             .state(self.query.downgrade())
                             .caret_blink_interval_500ms()
                             .w(px(220.))
@@ -3491,17 +3588,17 @@ impl Broom {
                             .min_h_auto()
                             .flex()
                             .items_center()
-                            .rounded_md()
+                            .rounded(theme::radius(6.))
                             .border_1()
-                            .border_color(rgb(BORDER))
-                            .bg(rgb(BG))
+                            .border_color(rgb(colors().border))
+                            .bg(rgb(colors().bg))
                             .text_size(px(12.)),
                     ),
                 );
                 bar = bar
                     .child(color_toggle(r.color_by, cx))
                     .child(
-                        div().text_xs().text_color(rgb(MUTED)).flex_none().child(format!(
+                        div().text_xs().text_color(rgb(colors().muted)).flex_none().child(format!(
                             "Scanned in {:.1}s",
                             r.elapsed.as_secs_f32()
                         )),
@@ -3513,7 +3610,7 @@ impl Broom {
             }
             Screen::Scanning(_) => {
                 bar = bar.child(div().flex_1()).child(
-                    primary_button("cancel", "Cancel Scan", DANGER).on_click(cx.listener(|this, _, _, cx| this.cancel_scan(cx))),
+                    primary_button("cancel", "Cancel Scan", colors().danger).on_click(cx.listener(|this, _, _, cx| this.cancel_scan(cx))),
                 );
             }
             // Nothing scanned: the rail is the call to action; up here only the
@@ -3538,7 +3635,7 @@ impl Broom {
             Screen::Start => None,
         };
         let heading = |text: &'static str| {
-            div().px_3().pt_3().pb_1().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(rgb(MUTED)).child(text)
+            div().px_3().pt_3().pb_1().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(rgb(colors().muted)).child(text)
         };
         let row = |id: gpui::ElementId, is_active: bool| {
             div()
@@ -3546,10 +3643,10 @@ impl Broom {
                 .mx_1p5()
                 .px_2()
                 .py_1p5()
-                .rounded_md()
+                .rounded(theme::radius(6.))
                 .cursor_pointer()
-                .when(is_active, |d| d.bg(rgb(CARD_HOVER)))
-                .when(!is_active, |d| d.hover(|s| s.bg(rgb(CARD))))
+                .when(is_active, |d| d.bg(rgb(colors().card_hover)))
+                .when(!is_active, |d| d.hover(|s| s.bg(rgb(colors().card))))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         };
 
@@ -3576,7 +3673,7 @@ impl Broom {
                             .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::MEDIUM).child(volume.name.clone())),
                     )
                     .child(meter(fraction, hue))
-                    .child(div().text_xs().text_color(rgb(MUTED)).truncate().child(format!(
+                    .child(div().text_xs().text_color(rgb(colors().muted)).truncate().child(format!(
                         "{} free of {}",
                         format_size(volume.free),
                         format_size(volume.total)
@@ -3588,7 +3685,7 @@ impl Broom {
                             div()
                                 .id(("purgeable", i))
                                 .text_xs()
-                                .text_color(rgb(MUTED))
+                                .text_color(rgb(colors().muted))
                                 .truncate()
                                 .tooltip(|_, cx| {
                                     cx.new(|_| Tip("Local Time Machine snapshots, caches and re-downloadable iCloud files. macOS frees them on demand; About This Mac counts them as available.".into())).into()
@@ -3607,7 +3704,7 @@ impl Broom {
                 .flex()
                 .flex_col()
                 .child(div().font_weight(FontWeight::MEDIUM).child("Home folder"))
-                .child(div().text_xs().text_color(rgb(MUTED)).truncate().child(abbreviate_home(&home.to_string_lossy()))),
+                .child(div().text_xs().text_color(rgb(colors().muted)).truncate().child(abbreviate_home(&home.to_string_lossy()))),
         );
         if !self.clouds.is_empty() {
             list = list.child(heading("CLOUD"));
@@ -3620,7 +3717,7 @@ impl Broom {
                         .flex()
                         .flex_col()
                         .child(div().font_weight(FontWeight::MEDIUM).truncate().child(cloud.name.clone()))
-                        .child(div().text_xs().text_color(rgb(MUTED)).truncate().child(abbreviate_home(&cloud.path.to_string_lossy()))),
+                        .child(div().text_xs().text_color(rgb(colors().muted)).truncate().child(abbreviate_home(&cloud.path.to_string_lossy()))),
                 );
             }
         }
@@ -3640,18 +3737,18 @@ impl Broom {
             .h_full()
             .flex()
             .flex_col()
-            .bg(rgb(PANEL))
+            .bg(rgb(colors().panel))
             .border_r_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(colors().border))
             .child(list)
             .child(
                 div()
                     .px_3()
                     .py_2()
                     .border_t_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(rgb(colors().border))
                     .text_xs()
-                    .text_color(rgb(MUTED))
+                    .text_color(rgb(colors().muted))
                     .child("↑↓ → ← navigate · ␣ stage"),
             )
     }
@@ -3664,9 +3761,9 @@ impl Broom {
             .h_full()
             .flex()
             .flex_col()
-            .bg(rgb(PANEL))
+            .bg(rgb(colors().panel))
             .border_r_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(colors().border))
     }
 
     /// Nothing scanned yet: an empty navigator and, where the chart goes, a nudge
@@ -3682,8 +3779,8 @@ impl Broom {
                     .flex()
                     .flex_col()
                     .gap_0p5()
-                    .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).text_color(rgb(MUTED)).child("No scan yet"))
-                    .child(div().text_xs().text_color(rgb(MUTED)).child("Folders appear here as the scan runs.")),
+                    .child(div().text_lg().font_family(theme::current().display).font_weight(FontWeight::SEMIBOLD).text_color(rgb(colors().muted)).child("No scan yet"))
+                    .child(div().text_xs().text_color(rgb(colors().muted)).child("Folders appear here as the scan runs.")),
             )
             .children(self.render_access_card(None, cx));
         let chart = div()
@@ -3696,12 +3793,12 @@ impl Broom {
             .gap_3()
             .px_6()
             .child(div().max_w(px(420.)).child(comic::investigator(comic::idle(), None, 56.0)))
-            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Pick a disk to scan"))
+            .child(div().text_lg().font_family(theme::current().display).font_weight(FontWeight::SEMIBOLD).child("Pick a disk to scan"))
             .child(
                 div()
                     .max_w(px(380.))
                     .text_center()
-                    .text_color(rgb(MUTED))
+                    .text_color(rgb(colors().muted))
                     .child("Choose a disk or folder on the left. The chart fills in live while the scan runs; findings and the cleanup plan land on the right."),
             );
         div().size_full().flex().child(nav).child(chart)
@@ -3716,9 +3813,9 @@ impl Broom {
             .h_full()
             .flex()
             .flex_col()
-            .bg(rgb(PANEL))
+            .bg(rgb(colors().panel))
             .border_l_1()
-            .border_color(rgb(BORDER));
+            .border_color(rgb(colors().border));
         match &self.screen {
             Screen::Results(r) => col.child(self.render_findings(&r.findings, Some(r), cx)).child(self.render_plan(r, cx)),
             Screen::Scanning(s) => {
@@ -3778,9 +3875,9 @@ impl Broom {
                         .flex()
                         .items_center()
                         .gap_1()
-                        .text_color(rgb(MUTED))
+                        .text_color(rgb(colors().muted))
                         .cursor_pointer()
-                        .hover(|s| s.text_color(rgb(TEXT)))
+                        .hover(|s| s.text_color(rgb(colors().text)))
                         .child(format!("‹ {}", path_to(&view.tree, view.focus).iter().map(|n| n.to_string()).collect::<Vec<_>>().join(" › ")))
                         .on_click(cx.listener(move |this, _, _, cx| this.live_focus(up.clone(), cx))),
                 );
@@ -3797,12 +3894,12 @@ impl Broom {
                     div()
                         .id(("live-row", ix))
                         .w_full()
-                        .h(px(ROW_HEIGHT))
+                        .h(px(theme::current().row_height))
                         .px_2()
                         .flex()
                         .items_center()
                         .gap_1p5()
-                        .rounded_md()
+                        .rounded(theme::radius(6.))
                         .when(is_hovered, |d| d.bg(gpui::hsla(swatch.hue.into_positive_degrees() / 360.0, swatch.saturation, 0.45, 0.16)))
                         .when(openable, |d| d.cursor_pointer())
                         .on_hover(cx.listener(move |this, hovering: &bool, _, cx| {
@@ -3817,11 +3914,11 @@ impl Broom {
                                 .flex_none()
                                 .text_right()
                                 .text_xs()
-                                .font_family("Menlo")
-                                .text_color(if is_final { rgb(TEXT) } else { rgb(MUTED) })
+                                .font_family(theme::current().mono)
+                                .text_color(if is_final { rgb(colors().text) } else { rgb(colors().muted) })
                                 .child(size_label(view, ix)),
                         )
-                        .child(div().w(px(14.)).flex_none().text_color(rgb(MUTED)).child(if openable { "›" } else { "" })),
+                        .child(div().w(px(14.)).flex_none().text_color(rgb(colors().muted)).child(if openable { "›" } else { "" })),
                 );
             }
         }
@@ -3836,8 +3933,8 @@ impl Broom {
                     .flex()
                     .flex_col()
                     .gap_0p5()
-                    .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).truncate().child(format!("Scanning “{disk_name}”…")))
-                    .child(div().text_color(rgb(MUTED)).child(format!("{} · {} files", format_size(scanned), format_count(files))))
+                    .child(div().text_lg().font_family(theme::current().display).font_weight(FontWeight::SEMIBOLD).truncate().child(format!("Scanning “{disk_name}”…")))
+                    .child(div().text_color(rgb(colors().muted)).child(format!("{} · {} files", format_size(scanned), format_count(files))))
                     .child(match progress.expected_items.get() {
                         Some(&expected) => {
                             let items = files + progress.dirs.load(Ordering::Relaxed);
@@ -3853,17 +3950,17 @@ impl Broom {
                                         .h(px(6.))
                                         .w_full()
                                         .rounded_full()
-                                        .bg(rgb(BORDER))
-                                        .child(div().h_full().w(relative(done)).rounded_full().bg(rgb(ACCENT))),
+                                        .bg(rgb(colors().border))
+                                        .child(div().h_full().w(relative(done)).rounded_full().bg(rgb(colors().accent))),
                                 )
-                                .child(div().text_xs().text_color(rgb(MUTED)).child(match left {
+                                .child(div().text_xs().text_color(rgb(colors().muted)).child(match left {
                                     Some(left) => format!("{:.0}% · {left}", done * 100.0),
                                     None => format!("{:.0}%", done * 100.0),
                                 }))
                                 .into_any_element()
                         }
                         // A folder: no known total, so no percentage or countdown.
-                        None => div().text_xs().text_color(rgb(MUTED)).child("Scanning…").into_any_element(),
+                        None => div().text_xs().text_color(rgb(colors().muted)).child("Scanning…").into_any_element(),
                     })
                     .child({
                         let done = progress.expected_items.get().map(|&expected| eta::fraction(files + progress.dirs.load(Ordering::Relaxed), expected));
@@ -3873,7 +3970,7 @@ impl Broom {
             .children(scanning.focus.is_empty().then(|| self.render_access_card(None, cx)).flatten())
             .children(crumbs)
             .child(rows)
-            .child(div().px_4().py_2().text_xs().text_color(rgb(MUTED)).child("Click a folder to look inside"));
+            .child(div().px_4().py_2().text_xs().text_color(rgb(colors().muted)).child("Click a folder to look inside"));
 
         // Chart: share of the volume found so far for plain volume scans (the startup disk's
         // remainder is its own slice instead).
@@ -3936,7 +4033,7 @@ impl Broom {
                     },
                     move |bounds, hitbox, window, _| {
                         let geometry = Geometry::new(bounds);
-                        geometry.paint_disc(window, geometry.outer_radius() + 6.0, to_hsla(0x18191c));
+                        geometry.paint_disc(window, geometry.outer_radius() + 6.0, to_hsla(colors().chart_surface));
                         let Some(view) = paint_view else { return };
                         let pulse = 0.22 + 0.04 * (clock::since(started).as_secs_f32() * 3.0).sin();
                         let mut motion = motion.borrow_mut();
@@ -3983,7 +4080,7 @@ impl Broom {
                             geometry.paint_sector(window, 1, fraction, 1.0, gpui::hsla(0.0, 0.0, pulse, 1.0));
                         }
                         window.request_animation_frame();
-                        geometry.paint_disc(window, geometry.inner_radius - 1.0, to_hsla(0x2b2d33));
+                        geometry.paint_disc(window, geometry.inner_radius - 1.0, to_hsla(colors().chart_center));
 
                         // Hit testing against exactly what was painted, so a newer snapshot can't
                         // shift what a click means.
@@ -4056,7 +4153,7 @@ impl Broom {
                             .items_center()
                             .gap_0p5()
                             .child(div().max_w_full().text_base().font_weight(FontWeight::SEMIBOLD).truncate().child(title))
-                            .children(lines.into_iter().map(|line| div().text_xs().text_color(rgb(MUTED)).child(line))),
+                            .children(lines.into_iter().map(|line| div().text_xs().text_color(rgb(colors().muted)).child(line))),
                     ),
             );
 
@@ -4083,10 +4180,10 @@ impl Broom {
                 .id(id)
                 .px_2()
                 .py_0p5()
-                .rounded_md()
+                .rounded(theme::radius(6.))
                 .cursor_pointer()
-                .when(selected, |d| d.bg(rgb(CARD_HOVER)).text_color(rgb(TEXT)))
-                .when(!selected, |d| d.text_color(rgb(MUTED)).hover(|s| s.text_color(rgb(TEXT))))
+                .when(selected, |d| d.bg(rgb(colors().card_hover)).text_color(rgb(colors().text)))
+                .when(!selected, |d| d.text_color(rgb(colors().muted)).hover(|s| s.text_color(rgb(colors().text))))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.sort = value;
                     if let Some(r) = this.results() {
@@ -4102,9 +4199,9 @@ impl Broom {
             .items_center()
             .gap_0p5()
             .p_0p5()
-            .rounded_lg()
+            .rounded(theme::radius(8.))
             .border_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(colors().border))
             .text_xs()
             .child(sort_option("sort-size", "Size", SortBy::Size, cx))
             .child(sort_option("sort-name", "Name", SortBy::Name, cx));
@@ -4123,22 +4220,22 @@ impl Broom {
                             .flex()
                             .items_start()
                             .gap_2()
-                            .child(div().flex_1().min_w_0().text_lg().font_weight(FontWeight::SEMIBOLD).truncate().child(focus.name.clone()))
+                            .child(div().flex_1().min_w_0().text_lg().font_family(theme::current().display).font_weight(FontWeight::SEMIBOLD).truncate().child(focus.name.clone()))
                             .child(sort_toggle),
                     )
-                    .child(div().text_color(rgb(MUTED)).child(format!(
+                    .child(div().text_color(rgb(colors().muted)).child(format!(
                         "{} · {} files",
                         format_size(focus.size),
                         format_count(focus.items)
                     )))
                     .when(r.tree.cloud_only > 0, |d| {
-                        d.child(div().text_xs().text_color(rgb(MUTED)).child(format!(
+                        d.child(div().text_xs().text_color(rgb(colors().muted)).child(format!(
                             "{} cloud-only folders not downloaded (use no space here)",
                             format_count(r.tree.cloud_only)
                         )))
                     })
                     .when(r.tree.errors > 0, |d| {
-                        d.child(div().text_xs().text_color(rgb(MUTED)).child(format!(
+                        d.child(div().text_xs().text_color(rgb(colors().muted)).child(format!(
                             "{} items couldn’t be read (permissions)",
                             format_count(r.tree.errors)
                         )))
@@ -4172,8 +4269,8 @@ impl Broom {
         let mut list = div().id("findings").max_h(px(290.)).overflow_y_scroll().flex().flex_col().gap_0p5().px_1p5();
         for (i, finding) in findings.iter().enumerate() {
             let (tag, color) = match finding.safety {
-                Safety::Safe => ("Safe to delete", SAFE),
-                Safety::Review => ("Review first", REVIEW),
+                Safety::Safe => ("Safe to delete", colors().safe),
+                Safety::Review => ("Review first", colors().review),
             };
             let target = finding.nodes.first().copied().filter(|_| finding.path.is_some());
             let nodes = finding.nodes.clone();
@@ -4186,12 +4283,12 @@ impl Broom {
                     .id(("finding", i))
                     .px_1p5()
                     .py_1()
-                    .rounded_md()
+                    .rounded(theme::radius(6.))
                     .flex()
                     .items_start()
                     .gap_2()
                     .when(results.is_some() && target.is_some(), |d| {
-                        d.cursor_pointer().hover(|s| s.bg(rgb(CARD_HOVER))).on_click(cx.listener(move |this, _, _, cx| {
+                        d.cursor_pointer().hover(|s| s.bg(rgb(colors().card_hover))).on_click(cx.listener(move |this, _, _, cx| {
                             if let (Some(r), Some(ix)) = (this.results(), target) {
                                 r.navigate(ix);
                                 cx.notify();
@@ -4227,10 +4324,10 @@ impl Broom {
                                             div()
                                                 .flex_none()
                                                 .px_1()
-                                                .rounded_sm()
-                                                .bg(rgb(CARD_HOVER))
+                                                .rounded(theme::radius(4.))
+                                                .bg(rgb(colors().card_hover))
                                                 .text_xs()
-                                                .text_color(rgb(MUTED))
+                                                .text_color(rgb(colors().muted))
                                                 .child("in view"),
                                         )
                                     })
@@ -4239,7 +4336,7 @@ impl Broom {
                                             .flex_none()
                                             .text_right()
                                             .font_weight(FontWeight::SEMIBOLD)
-                                            .when(finding.pending, |d| d.text_color(rgb(MUTED)))
+                                            .when(finding.pending, |d| d.text_color(rgb(colors().muted)))
                                             .child(if finding.pending { "…".to_string() } else { format_size(finding.size) }),
                                     ),
                             )
@@ -4249,8 +4346,8 @@ impl Broom {
                                     .gap_1()
                                     .text_xs()
                                     .child(div().flex_none().text_color(rgb(color)).child(tag))
-                                    .child(div().flex_none().text_color(rgb(MUTED)).child("·"))
-                                    .child(div().min_w_0().text_color(rgb(MUTED)).truncate().child(finding.blurb.clone())),
+                                    .child(div().flex_none().text_color(rgb(colors().muted)).child("·"))
+                                    .child(div().min_w_0().text_color(rgb(colors().muted)).truncate().child(finding.blurb.clone())),
                             ),
                     ),
             );
@@ -4281,7 +4378,7 @@ impl Broom {
                     .items_center()
                     .gap_2()
                     .child(div().font_weight(FontWeight::SEMIBOLD).child("Findings"))
-                    .child(div().flex_1().min_w_0().truncate().text_xs().text_color(rgb(MUTED)).child(summary))
+                    .child(div().flex_1().min_w_0().truncate().text_xs().text_color(rgb(colors().muted)).child(summary))
                     .when(results.is_some() && !safe_nodes.is_empty(), |d| {
                         let nodes = safe_nodes.clone();
                         d.child(
@@ -4320,14 +4417,14 @@ impl Broom {
                 div()
                     .id(("row", ix))
                     .w_full()
-                    .h(px(ROW_HEIGHT))
+                    .h(px(theme::current().row_height))
                     .px_1p5()
                     .flex()
                     .items_center()
                     .gap_1p5()
-                    .rounded_md()
+                    .rounded(theme::radius(6.))
                     .border_1()
-                    .border_color(if is_selected { to_hsla(ACCENT) } else { gpui::hsla(0., 0., 0., 0.) })
+                    .border_color(if is_selected { to_hsla(colors().accent) } else { gpui::hsla(0., 0., 0., 0.) })
                     .when(is_hovered || is_selected, |d| d.bg(tint))
                     .when(openable, |d| d.cursor_pointer())
                     .on_hover(cx.listener(move |this, hovering: &bool, _, cx| {
@@ -4370,7 +4467,7 @@ impl Broom {
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .child(div().truncate().when(tick != Tick::Off, |d| d.text_color(rgb(MUTED))).child(node.name.clone()))
+                            .child(div().truncate().when(tick != Tick::Off, |d| d.text_color(rgb(colors().muted))).child(node.name.clone()))
                             .when(is_dir, |d| {
                                 d.child(
                                     div()
@@ -4406,16 +4503,16 @@ impl Broom {
                             .w(px(72.))
                             .flex_none()
                             .text_right()
-                            .text_color(rgb(MUTED))
+                            .text_color(rgb(colors().muted))
                             .text_xs()
-                            .font_family("Menlo")
+                            .font_family(theme::current().mono)
                             .child(format_size(node.size)),
                     )
                     .child(
                         div()
                             .w(px(10.))
                             .flex_none()
-                            .text_color(rgb(MUTED))
+                            .text_color(rgb(colors().muted))
                             .child(if openable { "›" } else { "" }),
                     )
             })
@@ -4440,11 +4537,11 @@ impl Broom {
                     .id(("plan", ix))
                     .px_1p5()
                     .py_1()
-                    .rounded_md()
+                    .rounded(theme::radius(6.))
                     .flex()
                     .items_center()
                     .gap_2()
-                    .hover(|s| s.bg(rgb(CARD_HOVER)))
+                    .hover(|s| s.bg(rgb(colors().card_hover)))
                     .child(
                         div()
                             .flex_1()
@@ -4452,9 +4549,9 @@ impl Broom {
                             .flex()
                             .flex_col()
                             .child(div().truncate().font_weight(FontWeight::MEDIUM).child(node.name.clone()))
-                            .child(div().text_xs().text_color(rgb(MUTED)).truncate().child(parent)),
+                            .child(div().text_xs().text_color(rgb(colors().muted)).truncate().child(parent)),
                     )
-                    .child(div().flex_none().text_xs().font_family("Menlo").text_color(rgb(MUTED)).child(format_size(node.size)))
+                    .child(div().flex_none().text_xs().font_family(theme::current().mono).text_color(rgb(colors().muted)).child(format_size(node.size)))
                     .child(
                         div()
                             .id(("unstage", ix))
@@ -4463,10 +4560,10 @@ impl Broom {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded_md()
+                            .rounded(theme::radius(6.))
                             .cursor_pointer()
-                            .text_color(rgb(MUTED))
-                            .hover(|s| s.bg(rgb(BORDER)).text_color(rgb(TEXT)))
+                            .text_color(rgb(colors().muted))
+                            .hover(|s| s.bg(rgb(colors().border)).text_color(rgb(colors().text)))
                             .tooltip(|_, cx| cx.new(|_| Tip("Remove from the plan".into())).into())
                             .child("×")
                             .on_click(cx.listener(move |this, _, _, cx| this.unstage(ix, cx))),
@@ -4479,8 +4576,8 @@ impl Broom {
                 .flex()
                 .justify_between()
                 .gap_2()
-                .child(div().text_color(rgb(MUTED)).child(label))
-                .child(div().font_family("Menlo").text_xs().when(strong, |d| d.text_color(rgb(TEXT)).font_weight(FontWeight::SEMIBOLD)).when(!strong, |d| d.text_color(rgb(MUTED))).child(value))
+                .child(div().text_color(rgb(colors().muted)).child(label))
+                .child(div().font_family(theme::current().mono).text_xs().when(strong, |d| d.text_color(rgb(colors().text)).font_weight(FontWeight::SEMIBOLD)).when(!strong, |d| d.text_color(rgb(colors().muted))).child(value))
         };
 
         div()
@@ -4490,8 +4587,8 @@ impl Broom {
             .flex()
             .flex_col()
             .border_t_1()
-            .border_color(rgb(BORDER))
-            .on_drag_over::<DraggedItem>(|style, _, _, _| style.bg(rgb(CARD)))
+            .border_color(rgb(colors().border))
+            .on_drag_over::<DraggedItem>(|style, _, _, _| style.bg(rgb(colors().card)))
             .on_drop(cx.listener(|this, item: &DraggedItem, _, cx| {
                 if let Some(r) = this.results() {
                     r.collect(item.node);
@@ -4508,7 +4605,7 @@ impl Broom {
                     .items_center()
                     .gap_2()
                     .child(div().font_weight(FontWeight::SEMIBOLD).child("Cleanup plan"))
-                    .child(div().flex_1().text_xs().text_color(rgb(MUTED)).child(match r.collector.len() {
+                    .child(div().flex_1().text_xs().text_color(rgb(colors().muted)).child(match r.collector.len() {
                         0 => String::new(),
                         1 => "1 item".to_string(),
                         n => format!("{n} items"),
@@ -4529,7 +4626,7 @@ impl Broom {
                         .flex_1()
                         .px_3()
                         .text_xs()
-                        .text_color(rgb(MUTED))
+                        .text_color(rgb(colors().muted))
                         .child("Tick a folder or a finding to stage it — or drag a row here. Nothing moves until you review the plan."),
                 )
             })
@@ -4541,10 +4638,10 @@ impl Broom {
                     .mt_2()
                     .px_3()
                     .py_2()
-                    .rounded_lg()
-                    .bg(rgb(BG))
+                    .rounded(theme::radius(8.))
+                    .bg(rgb(colors().bg))
                     .border_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(rgb(colors().border))
                     .flex()
                     .flex_col()
                     .gap_1()
@@ -4571,7 +4668,7 @@ impl Broom {
             )
             .child(
                 div().flex_none().p_3().child(
-                    primary_button("trash", "Review & move to Trash", DANGER)
+                    primary_button("trash", "Review & move to Trash", colors().danger)
                         .w_full()
                         .text_center()
                         .when(empty, |b| b.opacity(0.45).cursor_default())
@@ -4598,7 +4695,7 @@ impl Broom {
                 div()
                     .px_2()
                     .py_1()
-                    .rounded_md()
+                    .rounded(theme::radius(6.))
                     .flex()
                     .items_center()
                     .gap_3()
@@ -4609,7 +4706,7 @@ impl Broom {
                             .flex()
                             .flex_col()
                             .child(div().truncate().font_weight(FontWeight::MEDIUM).child(node.name.clone()))
-                            .child(div().text_xs().text_color(rgb(MUTED)).font_family("Menlo").truncate().child(path)),
+                            .child(div().text_xs().text_color(rgb(colors().muted)).font_family(theme::current().mono).truncate().child(path)),
                     )
                     .child(
                         div()
@@ -4617,8 +4714,8 @@ impl Broom {
                             .flex()
                             .flex_col()
                             .items_end()
-                            .child(div().text_xs().font_family("Menlo").child(format_size(node.size)))
-                            .child(div().text_xs().text_color(rgb(MUTED)).child(match item_frees {
+                            .child(div().text_xs().font_family(theme::current().mono).child(format_size(node.size)))
+                            .child(div().text_xs().text_color(rgb(colors().muted)).child(match item_frees {
                                 Some(f) if f + node.size / 100 < node.size => format!("frees {}", format_size(f)),
                                 Some(_) => "frees all of it".to_string(),
                                 None => "working out…".to_string(),
@@ -4639,7 +4736,7 @@ impl Broom {
                 .flex_col()
                 .gap_2()
                 .child(div().h(px(230.)).w_full().child(trashcan::stage(drop.clone())))
-                .child(div().text_xs().text_color(rgb(MUTED)).text_center().child(format!(
+                .child(div().text_xs().text_color(rgb(colors().muted)).text_center().child(format!(
                     "{landed} of {} in the bin · {}",
                     drop.total(),
                     format_size(bytes)
@@ -4652,10 +4749,10 @@ impl Broom {
             .w(px(560.))
             .max_h(px(600.))
             .p_4()
-            .rounded_xl()
-            .bg(rgb(PANEL))
+            .rounded(theme::radius(12.))
+            .bg(rgb(colors().panel))
             .border_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(colors().border))
             .shadow_lg()
             .flex()
             .flex_col()
@@ -4665,8 +4762,8 @@ impl Broom {
                     .flex()
                     .flex_col()
                     .gap_0p5()
-                    .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Move these to the Trash?"))
-                    .child(div().text_xs().text_color(rgb(MUTED)).child(subtitle)),
+                    .child(div().text_lg().font_family(theme::current().display).font_weight(FontWeight::SEMIBOLD).child("Move these to the Trash?"))
+                    .child(div().text_xs().text_color(rgb(colors().muted)).child(subtitle)),
             )
             .child(list)
             .children(stage)
@@ -4675,12 +4772,12 @@ impl Broom {
                     div()
                         .px_3()
                         .py_2()
-                        .rounded_lg()
-                        .bg(rgb(0x2a2818))
+                        .rounded(theme::radius(8.))
+                        .bg(theme::alpha(colors().review, 0.12))
                         .border_1()
-                        .border_color(rgb(0x4a4428))
+                        .border_color(theme::alpha(colors().review, 0.35))
                         .text_xs()
-                        .text_color(rgb(0xc8b86e))
+                        .text_color(rgb(colors().review))
                         .child(format!(
                             "{} of this is shared with files outside the selection (APFS clones or hard links), so the Trash will free {} rather than {}.",
                             format_size(shared),
@@ -4689,7 +4786,7 @@ impl Broom {
                         )),
                 )
             })
-            .child(div().text_xs().text_color(rgb(MUTED)).child("Everything goes to the Trash; you can put items back from Finder. The space comes back when you empty the Trash."))
+            .child(div().text_xs().text_color(rgb(colors().muted)).child("Everything goes to the Trash; you can put items back from Finder. The space comes back when you empty the Trash."))
             .child(
                 div()
                     .flex()
@@ -4700,7 +4797,7 @@ impl Broom {
                             .when(!review.working, |b| b.on_click(cx.listener(|this, _, window, cx| this.close_review(&CloseReview, window, cx)))),
                     )
                     .child(
-                        primary_button("review-trash", if review.working { "Moving…" } else { "Move to Trash" }, DANGER)
+                        primary_button("review-trash", if review.working { "Moving…" } else { "Move to Trash" }, colors().danger)
                             .when(review.working, |b| b.opacity(0.6))
                             .when(!review.working, |b| b.on_click(cx.listener(|this, _, _, cx| this.trash_staged(cx)))),
                     ),
@@ -4712,16 +4809,16 @@ impl Broom {
     /// as cards underneath (they show live while typing, no network involved). Click a
     /// card to go to its biggest folder; "+" collects the whole group.
     fn render_ask(&self, r: &Results, cx: &mut Context<Self>) -> impl IntoElement {
-        let note = |text: String| div().text_xs().text_color(rgb(MUTED)).child(text);
+        let note = |text: String| div().text_xs().text_color(rgb(colors().muted)).child(text);
         let mut card = div()
             .id("ask")
             .mx_3()
             .mb_2()
             .p_2()
-            .rounded_lg()
-            .bg(rgb(BG))
+            .rounded(theme::radius(8.))
+            .bg(rgb(colors().bg))
             .border_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(colors().border))
             .flex()
             .flex_col()
             .gap_1();
@@ -4752,7 +4849,7 @@ impl Broom {
                 if *intent == Intent::Delete && !r.collector.is_empty() {
                     card = card.child(
                         div().flex().justify_end().child(
-                            primary_button("ask-trash", "Review & move to Trash", DANGER)
+                            primary_button("ask-trash", "Review & move to Trash", colors().danger)
                                 .on_click(cx.listener(|this, _, window, cx| this.open_review(window, cx))),
                         ),
                     );
@@ -4764,8 +4861,8 @@ impl Broom {
             let mut list = div().id("ask-groups").max_h(px(220.)).overflow_y_scroll().flex().flex_col().gap_0p5();
             for (i, group) in groups.iter().take(ask::MAX_GROUPS).enumerate() {
                 let color = match group.safety {
-                    Safety::Safe => SAFE,
-                    Safety::Review => REVIEW,
+                    Safety::Safe => colors().safe,
+                    Safety::Review => colors().review,
                 };
                 let nodes = group.nodes.clone();
                 let biggest_dir = nodes.iter().copied().find(|&ix| r.tree.nodes[ix].kind == Kind::Dir);
@@ -4775,12 +4872,12 @@ impl Broom {
                         .id(("ask-group", i))
                         .px_2()
                         .py_1()
-                        .rounded_md()
+                        .rounded(theme::radius(6.))
                         .flex()
                         .items_center()
                         .gap_2()
                         .cursor_pointer()
-                        .hover(|s| s.bg(rgb(CARD_HOVER)))
+                        .hover(|s| s.bg(rgb(colors().card_hover)))
                         .when_some(biggest_dir, |d, ix| {
                             d.on_click(cx.listener(move |this, _, _, cx| {
                                 if let Some(r) = this.results() {
@@ -4805,7 +4902,7 @@ impl Broom {
     fn render_chart(&self, r: &Results, cx: &mut Context<Self>) -> impl IntoElement {
         let tree = &r.tree;
         let hovered = r.hovered();
-        let colors: Vec<Hsla> = r
+        let fills: Vec<Hsla> = r
             .segments
             .iter()
             .map(|s| {
@@ -4913,8 +5010,8 @@ impl Broom {
                             window.request_animation_frame();
                         }
 
-                        geometry.paint_disc(window, geometry.outer_radius() + 6.0, to_hsla(0x18191c));
-                        for ((segment, color), &hatched) in segments.iter().zip(&colors).zip(&staged) {
+                        geometry.paint_disc(window, geometry.outer_radius() + 6.0, to_hsla(colors().chart_surface));
+                        for ((segment, color), &hatched) in segments.iter().zip(&fills).zip(&staged) {
                             if segment.depth as f32 > 1.0 + eased * sunburst::MAX_DEPTH as f32 {
                                 continue;
                             }
@@ -4924,7 +5021,7 @@ impl Broom {
                             }
                         }
                         if t >= 1.0 {
-                            let mut font = gpui::font(".SystemUIFont");
+                            let mut font = gpui::font(theme::current().font);
                             font.weight = FontWeight::MEDIUM;
                             for (i, name) in &labels {
                                 let segment = &segments[*i];
@@ -4935,7 +5032,7 @@ impl Broom {
                                 let _ = line.paint(origin, line_height, TextAlign::Left, None, window, cx);
                             }
                         }
-                        let center = if center_hovered { to_hsla(0x3a3d44) } else { to_hsla(0x2b2d33) };
+                        let center = if center_hovered { to_hsla(colors().chart_center_hover) } else { to_hsla(colors().chart_center) };
                         geometry.paint_disc(window, geometry.inner_radius - 1.0, center);
 
                         if pointer {
@@ -5008,7 +5105,7 @@ impl Broom {
                                     .child(title),
                             )
                             .children(subtitle.lines().map(|line| {
-                                div().text_color(rgb(MUTED)).text_xs().child(line.to_string())
+                                div().text_color(rgb(colors().muted)).text_xs().child(line.to_string())
                             })),
                     ),
             )
@@ -5040,17 +5137,17 @@ impl Broom {
                             .px_4()
                             .py_2()
                             .rounded_full()
-                            .bg(rgb(CARD))
+                            .bg(rgb(colors().card))
                             .border_1()
-                            .border_color(rgb(SAFE))
+                            .border_color(rgb(colors().safe))
                             .shadow_lg()
                             .flex()
                             .items_center()
                             .gap_2()
                             .cursor_pointer()
-                            .child(div().flex_none().text_color(rgb(SAFE)).font_weight(FontWeight::BOLD).child("✓"))
+                            .child(div().flex_none().text_color(rgb(colors().safe)).font_weight(FontWeight::BOLD).child("✓"))
                             .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child(headline))
-                            .when(!detail.is_empty(), |d| d.child(div().min_w_0().truncate().text_xs().text_color(rgb(MUTED)).child(detail)))
+                            .when(!detail.is_empty(), |d| d.child(div().min_w_0().truncate().text_xs().text_color(rgb(colors().muted)).child(detail)))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 if let Some(r) = this.results() {
                                     r.banner = None;
@@ -5080,8 +5177,8 @@ fn render_help() -> impl IntoElement {
         .flex()
         .flex_col()
         .gap_3()
-        .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Help"))
-        .child(div().text_xs().text_color(rgb(MUTED)).child("The short version of everything Broom does."))
+        .child(div().text_lg().font_family(theme::current().display).font_weight(FontWeight::SEMIBOLD).child("Help"))
+        .child(div().text_xs().text_color(rgb(colors().muted)).child("The short version of everything Broom does."))
         .child(
             div()
                 .flex()
@@ -5093,7 +5190,7 @@ fn render_help() -> impl IntoElement {
                         .flex_col()
                         .gap_1()
                         .child(div().font_weight(FontWeight::SEMIBOLD).child(*q))
-                        .child(div().text_xs().text_color(rgb(MUTED)).child(*a))
+                        .child(div().text_xs().text_color(rgb(colors().muted)).child(*a))
                 })),
         )
 }
@@ -5106,10 +5203,10 @@ fn color_toggle(current: ColorBy, cx: &mut Context<Broom>) -> impl IntoElement {
             .id(id)
             .px_2()
             .py_0p5()
-            .rounded_md()
+            .rounded(theme::radius(6.))
             .cursor_pointer()
-            .when(selected, |d| d.bg(rgb(CARD_HOVER)).text_color(rgb(TEXT)))
-            .when(!selected, |d| d.text_color(rgb(MUTED)).hover(|s| s.text_color(rgb(TEXT))))
+            .when(selected, |d| d.bg(rgb(colors().card_hover)).text_color(rgb(colors().text)))
+            .when(!selected, |d| d.text_color(rgb(colors().muted)).hover(|s| s.text_color(rgb(colors().text))))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(move |this, _, _, cx| this.set_color_by(value, cx)))
             .child(label)
@@ -5120,11 +5217,11 @@ fn color_toggle(current: ColorBy, cx: &mut Context<Broom>) -> impl IntoElement {
         .items_center()
         .gap_0p5()
         .p_0p5()
-        .rounded_lg()
+        .rounded(theme::radius(8.))
         .border_1()
-        .border_color(rgb(BORDER))
+        .border_color(rgb(colors().border))
         .text_xs()
-        .child(div().pl_1p5().pr_0p5().text_color(rgb(MUTED)).child("Colour"))
+        .child(div().pl_1p5().pr_0p5().text_color(rgb(colors().muted)).child("Colour"))
         .child(option("color-folder", "Folder", ColorBy::Folder, cx))
         .child(option("color-kind", "Kind", ColorBy::Kind, cx))
 }
@@ -5140,10 +5237,10 @@ fn render_legend(r: &Results, cx: &mut Context<Broom>) -> impl IntoElement {
         .flex_col()
         .gap_0p5()
         .p_2()
-        .rounded_lg()
-        .bg(rgb(PANEL))
+        .rounded(theme::radius(8.))
+        .bg(rgb(colors().panel))
         .border_1()
-        .border_color(rgb(BORDER))
+        .border_color(rgb(colors().border))
         .text_xs();
     for category in CATEGORIES.into_iter().filter(|&c| r.segments.iter().any(|s| r.category(s.target) == Some(c))) {
         let lit = r.legend_hover.is_none_or(|h| h == category);
@@ -5154,7 +5251,7 @@ fn render_legend(r: &Results, cx: &mut Context<Broom>) -> impl IntoElement {
                 .items_center()
                 .gap_2()
                 .px_1()
-                .text_color(rgb(if lit { TEXT } else { MUTED }))
+                .text_color(rgb(if lit { colors().text } else { colors().muted }))
                 .on_hover(cx.listener(move |this, hovering: &bool, _, cx| {
                     if let Some(r) = this.results() {
                         if *hovering {
@@ -5183,26 +5280,26 @@ fn close_menu_on_outside(this: &mut Broom, _: &MouseDownEvent, _: &mut Window, c
 /// A staging checkbox. Clicks are wired by the caller; `enabled` is false for
 /// things that can't be staged (the root, home folders, volume slices).
 fn checkbox(id: impl Into<gpui::ElementId>, tick: Tick, enabled: bool) -> Stateful<gpui::Div> {
-    let accent = to_hsla(ACCENT);
+    let accent = to_hsla(colors().accent);
     let base = div()
         .id(id)
         .size(px(15.))
         .flex_none()
-        .rounded_sm()
+        .rounded(theme::radius(4.))
         .border_1()
         .flex()
         .items_center()
         .justify_center()
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
-    let check = || div().text_color(rgb(0xffffff)).text_size(px(10.)).font_weight(FontWeight::BOLD).child("✓");
+    let check = || div().text_color(rgb(colors().on_accent)).text_size(px(10.)).font_weight(FontWeight::BOLD).child("✓");
     let base = match tick {
-        Tick::Off => base.border_color(rgb(0x5d616b)).bg(rgb(BG)).when(enabled, |d| d.hover(|s| s.border_color(rgb(ACCENT)))),
+        Tick::Off => base.border_color(rgb(colors().faint)).bg(rgb(colors().bg)).when(enabled, |d| d.hover(|s| s.border_color(rgb(colors().accent)))),
         Tick::On => base.border_color(accent).bg(accent).child(check()),
         Tick::Implied => base
             .border_color(gpui::hsla(accent.hue.into_positive_degrees() / 360.0, accent.saturation, accent.lightness, 0.5))
             .bg(gpui::hsla(accent.hue.into_positive_degrees() / 360.0, accent.saturation, accent.lightness, 0.45))
             .child(check()),
-        Tick::Mixed => base.border_color(accent).bg(rgb(BG)).child(div().w(px(7.)).h(px(2.)).rounded_full().bg(accent)),
+        Tick::Mixed => base.border_color(accent).bg(rgb(colors().bg)).child(div().w(px(7.)).h(px(2.)).rounded_full().bg(accent)),
     };
     base.when(enabled && tick != Tick::Implied, |d| d.cursor_pointer()).when(!enabled, |d| d.opacity(0.3))
 }
@@ -5210,11 +5307,11 @@ fn checkbox(id: impl Into<gpui::ElementId>, tick: Tick, enabled: bool) -> Statef
 /// What a row is, as a mark rather than an emoji: a filled square for a folder,
 /// an outlined one for a file, a grey one for an APFS slice.
 fn kind_mark(kind: Kind, swatch: Hsla) -> impl IntoElement {
-    let mark = div().size(px(11.)).flex_none().rounded_sm();
+    let mark = div().size(px(11.)).flex_none().rounded(theme::radius(4.));
     match kind {
         Kind::Dir => mark.bg(swatch),
         Kind::File => mark.border_1().border_color(swatch).bg(gpui::hsla(swatch.hue.into_positive_degrees() / 360.0, swatch.saturation, swatch.lightness, 0.25)),
-        Kind::Other => mark.bg(rgb(0x5d616b)),
+        Kind::Other => mark.bg(rgb(colors().faint)),
     }
 }
 
@@ -5226,9 +5323,9 @@ fn plan_placeholder(text: &'static str) -> impl IntoElement {
         .flex()
         .flex_col()
         .border_t_1()
-        .border_color(rgb(BORDER))
+        .border_color(rgb(colors().border))
         .child(div().px_3().pt_3().pb_1p5().font_weight(FontWeight::SEMIBOLD).child("Cleanup plan"))
-        .child(div().px_3().text_xs().text_color(rgb(MUTED)).child(text))
+        .child(div().px_3().text_xs().text_color(rgb(colors().muted)).child(text))
 }
 
 /// Shape a chart label that fits in `max_width`, truncating with an ellipsis;
@@ -5265,11 +5362,11 @@ fn icon_button(id: impl Into<gpui::ElementId>, glyph: &'static str, tooltip: &'s
         .flex()
         .items_center()
         .justify_center()
-        .rounded_md()
-        .text_color(rgb(MUTED))
+        .rounded(theme::radius(6.))
+        .text_color(rgb(colors().muted))
         .cursor_pointer()
         .tooltip(move |_, cx| cx.new(|_| Tip(tooltip.into())).into())
-        .hover(|s| s.bg(rgb(BORDER)).text_color(rgb(TEXT)))
+        .hover(|s| s.bg(rgb(colors().border)).text_color(rgb(colors().text)))
         .child(glyph)
 }
 
@@ -5280,7 +5377,7 @@ static ABOUT_MARK: LazyLock<Arc<Image>> =
 /// A volume over 90% full reads as danger whatever its hue.
 fn level_color(fraction: f32, base: Hsla) -> Hsla {
     if fraction > 0.9 {
-        to_hsla(DANGER)
+        to_hsla(colors().danger)
     } else {
         base
     }
@@ -5295,6 +5392,6 @@ fn meter(fraction: f32, fill: Hsla) -> impl IntoElement {
         .rounded_full()
         // Translucent, like the card it sits on: a solid dark track would
         // read as a stray line over glass.
-        .bg(gpui::hsla(0., 0., 1., 0.12))
+        .bg(theme::overlay(0.12))
         .child(div().h_full().w(relative(fraction.clamp(0.0, 1.0))).rounded_full().bg(color))
 }
