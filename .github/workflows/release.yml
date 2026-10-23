@@ -1,23 +1,44 @@
-# A release is a signed tag `vX.Y.Z` pushed to main. This builds Broom.app and
-# the DMG, signs and notarizes them when the Developer ID secrets are set, and
-# attaches the DMG to a GitHub release created from that tag.
+# A release is a signed, annotated tag `vX.Y.Z` on main. The job refuses to run
+# for a tag GitHub can't verify or one that isn't on main, builds Broom.app and
+# the DMG, signs and notarizes them when the Developer ID secrets are set,
+# writes SHA256SUMS, attests the build's provenance, and publishes a GitHub
+# release from the tag. Actions are pinned to commits; Dependabot bumps them.
 name: Release
 on:
   push:
     tags: ['v*']
 permissions:
-  contents: write
+  contents: read
 jobs:
   release:
     runs-on: macos-14
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Verify the tag is signed, annotated and on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ref=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${GITHUB_REF_NAME}")
+          type=$(jq -r .object.type <<<"$ref")
+          sha=$(jq -r .object.sha <<<"$ref")
+          [[ "$type" == "tag" ]] || { echo "::error::${GITHUB_REF_NAME} is a lightweight tag; releases need an annotated, signed tag (git tag -s)"; exit 1; }
+          verified=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}" --jq '.verification.verified')
+          reason=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}" --jq '.verification.reason')
+          [[ "$verified" == "true" ]] || { echo "::error::tag signature not verified by GitHub (${reason})"; exit 1; }
+          git merge-base --is-ancestor "${GITHUB_SHA}" origin/main || { echo "::error::${GITHUB_REF_NAME} is not on main"; exit 1; }
+          echo "tag ${GITHUB_REF_NAME} is signed (${reason}) and on main"
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Check the tag matches Cargo.toml
         run: |
           v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
-          [[ "${GITHUB_REF_NAME}" == "v${v}" ]] || { echo "tag ${GITHUB_REF_NAME} != Cargo.toml ${v}"; exit 1; }
+          [[ "${GITHUB_REF_NAME}" == "v${v}" ]] || { echo "::error::tag ${GITHUB_REF_NAME} != Cargo.toml ${v}"; exit 1; }
       - name: Import the Developer ID certificate (when configured)
         env:
           P12_BASE64: ${{ secrets.DEVELOPER_ID_P12 }}
@@ -44,9 +65,21 @@ jobs:
         env:
           BROOM_SIGN_ID: ${{ secrets.DEVELOPER_ID_SIGN_ID }}
         run: scripts/bundle.sh --dmg
+      - name: Checksums
+        run: |
+          mv dist/Broom.dmg "dist/Broom-${GITHUB_REF_NAME#v}.dmg"
+          (cd dist && shasum -a 256 "Broom-${GITHUB_REF_NAME#v}.dmg" > SHA256SUMS && cat SHA256SUMS)
+      - name: Attest build provenance
+        # Sigstore attestation linking the DMG to this workflow run and commit;
+        # verify with `gh attestation verify Broom-X.Y.Z.dmg -R sriinnu/broom`.
+        # Only public repositories get attestations on the free plan.
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: dist/Broom-*.dmg
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" dist/Broom.dmg \
+          gh release create "${GITHUB_REF_NAME}" dist/Broom-*.dmg dist/SHA256SUMS \
             --verify-tag --title "Broom ${GITHUB_REF_NAME#v}" --generate-notes
