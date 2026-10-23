@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -14,7 +14,7 @@ use gpui::{
     PathPromptOptions, Pixels, Point, Rgba, ScrollHandle, ScrollStrategy, SharedString, Stateful, Task, TextAlign, TextRun,
     TitlebarOptions, UniformListScrollHandle, BorderStyle, Window, WindowBackgroundAppearance, WindowBounds, WindowHandle,
     WindowOptions, actions, anchored, canvas, deferred, div, point, prelude::*, px, quad, relative, rgb, size,
-    uniform_list,
+    uniform_list, img, Image, ImageFormat,
 };
 
 use gpui_ce_elements::editable_text::{EditableTextState, StringStorage, TextChanged, text_input};
@@ -1497,7 +1497,7 @@ impl Broom {
         }
     }
 
-    fn show_about(&mut self, _: &About, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn show_about(&mut self, _: &About, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
             return;
         }
@@ -3086,7 +3086,7 @@ impl Broom {
             .items_center()
             .gap_1()
             .pt_2()
-            .child(rosette(44.))
+            .child(img(ABOUT_MARK.clone()).size(px(72.)).flex_none())
             .child(div().text_3xl().font_weight(FontWeight::BOLD).child("Broom"))
             .child(div().text_color(rgb(MUTED)).child(format!("Version {}", env!("CARGO_PKG_VERSION"))))
             .child(div().mt_2().text_sm().child("A disk-space explorer for macOS."))
@@ -3364,6 +3364,8 @@ impl Broom {
                             .h(px(28.))
                             .px_2()
                             .min_h_auto()
+                            .flex()
+                            .items_center()
                             .rounded_md()
                             .border_1()
                             .border_color(rgb(BORDER))
@@ -5115,23 +5117,9 @@ fn icon_button(id: impl Into<gpui::ElementId>, glyph: &'static str, tooltip: &'s
         .child(glyph)
 }
 
-/// The brand mark: a six-broom rosette in the categorical hues.
-fn rosette(size: f32) -> impl IntoElement {
-    canvas(
-        |_, _, _| {},
-        move |bounds, _, window, _| {
-            let r: f32 = bounds.size.width.into();
-            let geometry = Geometry::ring(bounds.center(), r * 0.26, r * 0.5);
-            for i in 0..6 {
-                let start = i as f32 / 6.0 + 0.012;
-                let end = (i + 1) as f32 / 6.0 - 0.012;
-                geometry.paint_sector(window, 1, start, end, sunburst::hue_color(i));
-            }
-        },
-    )
-    .size(px(size))
-    .flex_none()
-}
+/// The app icon, as the About card's brand mark (a 256 px copy of packaging/AppIcon.png).
+static ABOUT_MARK: LazyLock<Arc<Image>> =
+    LazyLock::new(|| Arc::new(Image::from_bytes(ImageFormat::Png, include_bytes!("../packaging/AppIcon-256.png").to_vec())));
 
 /// A volume over 90% full reads as danger whatever its hue.
 fn level_color(fraction: f32, base: Hsla) -> Hsla {

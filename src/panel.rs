@@ -612,6 +612,8 @@ impl Panel {
                 .h(px(34.))
                 .px_3()
                 .min_h_auto()
+                .flex()
+                .items_center()
                 .rounded_lg()
                 .border_1()
                 .border_color(rgb(BORDER))
