@@ -127,6 +127,26 @@ pub fn install(window: &mut Window, cx: &mut Context<Broom>) {
                     })
                     .ok();
                 }
+                // `panel-burst name count ms`: like `burst`, for the panel window.
+                "panel-burst" => {
+                    let count = num(2) as usize;
+                    let gap = Duration::from_millis(num(3) as u64);
+                    let start = std::time::Instant::now();
+                    let mut frames = Vec::new();
+                    for _ in 0..count {
+                        if let Ok(Some(Ok(image))) = cx.update(|_, cx| crate::panel::capture(cx)) {
+                            frames.push((start.elapsed().as_secs_f64(), image));
+                        }
+                        cx.background_executor().timer(gap).await;
+                    }
+                    let name = parts.get(1).unwrap_or(&"panel-burst");
+                    let mut times = String::new();
+                    for (frame, (t, image)) in frames.iter().enumerate() {
+                        image.save(format!("{prefix}-{name}-{frame:03}.png")).ok();
+                        times.push_str(&format!("{t:.4}\n"));
+                    }
+                    std::fs::write(format!("{prefix}-{name}-times.txt"), times).ok();
+                }
                 "panel-shot" => {
                     let path = format!("{prefix}-{}.png", parts.get(1).unwrap_or(&"panel"));
                     cx.update(|_, cx| match crate::panel::capture(cx) {

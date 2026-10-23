@@ -6,6 +6,7 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,6 +19,7 @@ use gpui_ce_elements::editable_text::{EditableTextState, StringStorage, TextChan
 
 use crate::app::{self, ScanState, Snapshot};
 use crate::comic;
+use crate::trashcan;
 use crate::ask::{self, CandidateGroup, Intent, ProviderError, Scope};
 use crate::findings::Safety;
 use crate::scan::{self, Kind, format_count, format_size};
@@ -181,6 +183,8 @@ pub struct Panel {
     phase: Phase,
     /// The inline "really?" step before a deletion.
     confirming: bool,
+    /// The items tumbling into the bin while a move runs.
+    drop: Option<Rc<trashcan::Drop>>,
     /// A search is in flight: the list below is for the previous words.
     searching: bool,
     was_active: bool,
@@ -208,6 +212,7 @@ impl Panel {
             search_version: 0,
             phase: Phase::Idle,
             confirming: false,
+            drop: None,
             searching: false,
             was_active: false,
             last_active: false,
@@ -499,13 +504,25 @@ impl Panel {
         let paths: Vec<PathBuf> = items.iter().map(|&ix| snapshot.tree.path_of(ix)).collect();
         let paths_after = paths.clone();
         let tree = snapshot.tree.clone();
+        if std::env::var_os("BROOM_MB_DEBUG").is_some() {
+            eprintln!("panel: trashing {paths:?}");
+        }
         let expected = self.frees.unwrap_or_else(|| self.selected_size());
+        let sizes: Vec<(Kind, u64)> = items.iter().map(|&ix| (tree.nodes[ix].kind, tree.nodes[ix].size)).collect();
+        let drop = trashcan::Drop::new(trashcan::Item::from_sizes(&sizes), expected);
+        self.drop = Some(drop.clone());
         self.phase = Phase::Trashing;
         self.confirming = false;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move { trash::delete_all(&paths) }).await;
+            let result = cx.background_spawn(async move { trashcan::send(&paths) }).await;
+            if result.is_ok() {
+                // Let the last item land and the lid close before the list comes back.
+                drop.settle();
+                cx.background_executor().timer(drop.remaining()).await;
+            }
             this.update(cx, |this, cx| {
+                this.drop = None;
                 match result {
                     Ok(()) => {
                         let count = items.len();
@@ -922,6 +939,21 @@ impl Render for Panel {
             window.remove_window();
         }
         let empty = self.groups.is_empty();
+        let stage = self.drop.as_ref().filter(|_| matches!(self.phase, Phase::Trashing)).map(|drop| {
+            let (landed, bytes) = drop.landed();
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(div().flex_1().min_h_0().w_full().child(trashcan::stage(drop.clone())))
+                .child(div().text_xs().text_color(rgb(MUTED)).text_center().pb_2().child(format!(
+                    "{landed} of {} in the bin · {}",
+                    drop.total(),
+                    format_size(bytes)
+                )))
+        });
+        let staging = stage.is_some();
         div()
             .id("broom")
             .key_context("SearchPanel")
@@ -952,8 +984,9 @@ impl Render for Panel {
                     .px_3()
                     .pb_2()
                     .when(self.searching, |d| d.opacity(0.45))
-                    .when(empty, |d| d.child(self.render_empty(cx)))
-                    .when(!empty, |d| d.child(self.render_groups(cx))),
+                    .children(stage)
+                    .when(!staging && empty, |d| d.child(self.render_empty(cx)))
+                    .when(!staging && !empty, |d| d.child(self.render_groups(cx))),
             )
             .child(self.render_footer(cx))
     }

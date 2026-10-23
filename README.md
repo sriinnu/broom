@@ -66,7 +66,11 @@ for the usual space hogs, and a cleanup plan you stage with checkboxes before an
   Chrome's update leftovers. Each is **Safe to delete** or **Review first**, with a one-line reason.
 - **A cleanup plan, not a delete button.** Tick folders, findings or panel groups to stage them. The
   plan shows what's selected, what's shared with other files, and what will actually free. **Review
-  & move to Trash** lists every path once more before anything moves.
+  & move to Trash** lists every path once more before anything moves, and then the folders tumble
+  into a little bin while the real move runs. Finder does the move, so **Put Back** works; the few
+  folders Finder refuses (very large `node_modules`, say) go through NSFileManager instead.
+- **It keeps up with Finder.** Empty the Trash, or drop something into it, and the Trash finding,
+  the folder's slice and the disks' free space follow within a couple of seconds, no rescan.
 - **Safe by design.** Broom only reads file metadata, never downloads cloud-only files, never
   sends anything over the network except the optional classifier calls, and has no analytics.
 - **The investigator.** While a scan runs, a small ligne-claire investigator sniffs around with a
@@ -148,7 +152,8 @@ or drag it onto the plan. The search box at the top takes the same questions the
 | ⌘, | Settings |
 | ⌘Q | Quit |
 
-You can also pass a folder on the command line: `broom ~/Library`.
+You can also pass a folder on the command line: `broom ~/Library`. Broom runs as one instance: a
+second launch hands its folder to the running one, brings it forward and exits.
 
 ## From a terminal, or an agent
 
@@ -190,6 +195,8 @@ src/
 │   └── laya.rs      chat-completion second opinion
 ├── classify/      what kind of thing a path is (apps, caches, photos…), colours the chart by kind
 ├── comic.rs       the investigator and the captions
+├── trashcan.rs    the drop (folders tumbling into the bin) and the Finder-then-NSFileManager move
+├── single.rs      one Broom at a time: a Unix socket in the state folder hands a second launch over
 ├── scan.rs        parallel walk (outline → hotspots → depth-first), the flat Tree, names index, frees_of
 ├── dirlist.rs     getattrlistbulk/openat directory listing, with a portable fallback
 ├── live.rs        live per-folder totals during a scan, snapshots
@@ -237,7 +244,8 @@ cargo run --release -- --check-access             # does this process have Full 
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 
 Dev hooks: `BROOM_OPEN_PANEL=1` pops the panel shortly after launch, `BROOM_PANEL_QUERY=…`
-pre-fills it, `BROOM_MB_DEBUG=1` logs menu-bar and query timings.
+pre-fills it, `BROOM_MB_DEBUG=1` logs menu-bar and query timings and the paths sent to the Trash,
+`BROOM_NO_SINGLETON=1` lets a second instance run (snapshot and video runs are exempt anyway).
 
 ### Screenshots and video without Screen Recording permission
 
@@ -251,9 +259,9 @@ BROOM_SCRIPT="until-done 40; wait 2; shot main; panel; wait 1.5; panel-type node
 cargo run --release --features snapshot -- /tmp/demo/alex
 ```
 
-Steps: `wait S`, `shot NAME`, `move X Y`, `click`, `hover`, `glide X Y S`, `until-done MAX`,
-`panel`, `panel-type WORDS`, `panel-click X Y`, `panel-shot NAME`, `slow-motion N`,
-`hide-pointer`, `show-pointer`, `quit`. Coordinates are points within the window. For video, set
+Steps: `wait S`, `shot NAME`, `burst NAME COUNT MS`, `move X Y`, `click`, `hover`, `glide X Y S`,
+`until-done MAX`, `about`, `panel`, `panel-type WORDS`, `panel-click X Y`, `panel-shot NAME`,
+`panel-burst NAME COUNT MS`, `slow-motion N`, `hide-pointer`, `show-pointer`, `quit`. Coordinates are points within the window. For video, set
 `BROOM_VIDEO=/tmp/broom.mp4` instead of `BROOM_SNAPSHOT`.
 
 ### Packaging for other Macs
