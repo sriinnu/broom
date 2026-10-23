@@ -757,10 +757,12 @@ static BROOM_ENTITY: std::sync::OnceLock<Entity<Broom>> = std::sync::OnceLock::n
 static OPEN_TX: std::sync::OnceLock<mpsc::Sender<Request>> = std::sync::OnceLock::new();
 
 /// What the menu-bar extra asked for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
     /// Bring the main window back.
     Open,
+    /// Bring the main window back and scan this folder (a second `broom PATH`).
+    OpenPath(PathBuf),
     /// Toggle the search-and-clean panel under the 🧹.
     Panel,
 }
@@ -836,17 +838,26 @@ pub fn open_requested() {
     request(Request::Open);
 }
 
+/// A second launch (`broom [PATH]`) found this one running: come forward, and
+/// scan PATH if one was given. Any thread; never blocks.
+pub fn open_path_requested(path: Option<PathBuf>) {
+    request(match path {
+        Some(path) => Request::OpenPath(path),
+        None => Request::Open,
+    });
+}
+
 /// The 🧹 was clicked: toggle the search panel. Main thread; never blocks.
 pub fn panel_requested() {
     request(Request::Panel);
 }
 
 fn request(what: Request) {
-    if let Some(tx) = OPEN_TX.get() {
-        let _ = tx.send(what);
-    }
     if std::env::var_os("BROOM_MB_DEBUG").is_some() {
         eprintln!("menubar: {what:?} requested, tx present: {}", OPEN_TX.get().is_some());
+    }
+    if let Some(tx) = OPEN_TX.get() {
+        let _ = tx.send(what);
     }
 }
 
@@ -868,6 +879,12 @@ pub fn arm_reopen(cx: &mut App) {
             }
             let _ = cx.update(|cx| match what {
                 Request::Open => reopen(cx),
+                Request::OpenPath(path) => {
+                    reopen(cx);
+                    if let Some(broom) = broom() {
+                        broom.update(cx, |b, cx| b.start_scan(path, cx));
+                    }
+                }
                 Request::Panel => crate::panel::toggle(cx),
             });
         }

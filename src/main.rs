@@ -15,6 +15,7 @@ mod onboarding;
 mod scan;
 mod secrets;
 mod settings;
+mod single;
 #[cfg(feature = "snapshot")]
 mod snapshot;
 mod sunburst;
@@ -67,6 +68,11 @@ fn main() {
         .get(1)
         .map(PathBuf::from)
         .or_else(|| onboarding::is_first_run().then(|| loaded.settings.startup_root()));
+
+    // One Broom: a second launch hands its folder to the running one and leaves.
+    if !single::claim(initial.as_deref()) {
+        return;
+    }
 
     gpui_platform::application().run(move |cx: &mut App| {
         cx.on_action(|_: &Quit, cx| cx.quit());
