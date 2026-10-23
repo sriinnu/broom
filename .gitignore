@@ -1,4 +1,5 @@
 target/
-bench/petal-*
+bench/broom-*
 dist/
 .DS_Store
+__pycache__/

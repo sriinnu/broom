@@ -37,7 +37,7 @@ define_class!(
             crate::app::open_requested();
         }
 
-        /// The ✿ button itself: left click opens the search panel, right
+        /// The 🧹 button itself: left click opens the search panel, right
         /// click pops the menu (volumes, Open, Quit).
         #[unsafe(method(statusClicked:))]
         fn status_clicked(&self, _sender: Option<&AnyObject>) {
@@ -97,7 +97,7 @@ pub struct MenuBar {
     _item: Retained<NSStatusItem>,
     /// Keeps the action target alive for as long as the menu can fire.
     _bridge: Retained<MenuBridge>,
-    /// The bar's text ("✿ 62%"), updated in place.
+    /// The bar's text ("🧹 62%"), updated in place.
     button: Retained<NSStatusBarButton>,
     /// One menu line per volume, hidden when unused, so titles can be updated
     /// in place instead of rebuilding the menu.
@@ -109,7 +109,7 @@ fn ns(text: &str) -> Retained<NSString> {
 }
 
 impl MenuBar {
-    /// Build the status item on the main thread: `✿ 62%` in the bar, volume
+    /// Build the status item on the main thread: `🧹 62%` in the bar, volume
     /// lines below it, then Open and Quit. The action items target the shared
     /// application with selectors it already implements — no subclass needed.
     pub fn new(mtm: MainThreadMarker, startup_fraction: f32) -> Self {

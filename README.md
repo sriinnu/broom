@@ -1,139 +1,151 @@
 <p align="center">
-  <img src="packaging/AppIcon.png" width="128" height="128" alt="Broom icon">
+  <img src="packaging/AppIcon.png" width="160" height="160" alt="Broom: a small investigator with a flat cap, a magnifier over one eye and a broom over the shoulder">
 </p>
 
 <h1 align="center">Broom</h1>
 
-<p align="center"><sub>A fork of <a href="https://github.com/henrydennis/petal">Petal</a> by Henry Dennis, with a menu-bar search-and-clean panel, a redesigned window and a small investigator.</sub></p>
-
 <p align="center">
-  <b>See what's filling your Mac. In seconds.</b><br>
-  A fast, exact disk-space explorer for macOS with a live sunburst chart.<br>
-  Free and open source, written in Rust with a GPU-rendered native UI.
+  <b>Ask your Mac what's eating the disk. Tick what should go. Trash it.</b><br>
+  A menu-bar panel that understands plain English, over a fast, exact disk explorer with a live sunburst.<br>
+  Native macOS, written in Rust, GPU-rendered, no analytics, nothing leaves the machine but the question you typed.
 </p>
 
 <p align="center">
-  <a href="https://github.com/henrydennis/petal/actions/workflows/ci.yml"><img src="https://github.com/henrydennis/petal/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/sriinnu/broom/actions/workflows/ci.yml"><img src="https://github.com/sriinnu/broom/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/macOS-13%2B-black?logo=apple" alt="macOS 13+">
-  <img src="https://img.shields.io/badge/Rust-1.95%2B-orange?logo=rust" alt="Rust 1.95+">
+  <img src="https://img.shields.io/badge/Rust-1.98-orange?logo=rust" alt="Rust 1.98">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
-</p>
-
-<p align="center">
-  <a href="https://cdn.jsdelivr.net/gh/henrydennis/petal@main/docs/petal.mp4"><img src="docs/video-poster.jpg" width="820" alt="Petal in 50 seconds: play the video"></a><br>
-  <sub>▶ <b><a href="https://cdn.jsdelivr.net/gh/henrydennis/petal@main/docs/petal.mp4">Watch Petal in 50 seconds</a></b> (with sound)</sub>
 </p>
 
 ---
 
-Broom shows your disk as a sunburst: the centre is the folder you're looking at, each ring is one
-level deeper, and the size of a slice is how much space it takes. It draws the picture *while* it
-reads, tells you which big folders are safe to clear, and tells you exactly how much deleting them
-will free.
+Click the 🧹 in the menu bar and type what you mean: *node modules*, *all dist folders*,
+*old dmg files in downloads*, *worktrees*, *xcode junk*. Broom turns that into groups of folders it
+found on the last scan, labels each one **safe** or **review**, shows what deleting them really frees,
+and moves what you tick to the Trash. Nothing is deleted outright.
 
-## Highlights
+The main window is the full picture: a sunburst of the disk that draws while the scan runs, findings
+for the usual space hogs, and a cleanup plan you stage with checkboxes before anything moves.
 
-- **Live from the first second.** The chart appears straight away and fills in as Broom reads. Folders
-  turn from muted to full colour the moment their total is final, and you can click into them before
-  the scan has finished. Segments glide into place instead of jumping.
-- **Fast.** A whole Mac (about 6 million files) in roughly 25 seconds; a typical home folder in a few
-  seconds; a 90,000-item folder in under a second. Directory listings use `getattrlistbulk` and
-  `openat` across all cores. The [performance notes](docs/PERFORMANCE.md) have the measurements.
-- **Exact.** Sizes are allocated blocks, so they match Finder's "on disk". For the startup disk, every
-  other APFS volume (macOS itself, Preboot, VM, Recovery…) gets an exact slice, so the chart adds
-  up to the disk's used space **to the byte**.
-- **Findings.** Broom checks the usual suspects first (Trash, Downloads, Xcode build files and
-  archives, iOS device support and simulators, iPhone backups, Docker, app caches, npm, Cargo, Gradle,
-  Movies, Mail, `node_modules`, Chrome's update leftovers) and labels each **Safe to delete** or
-  **Review first**, with a one-line explanation. The first ones show up within a fraction of a second.
-- **Savings you can trust.** On APFS, deleting a cloned or hard-linked file may free nothing. Broom
-  works out what deleting your selection *really* frees, counting clones and hard links once, and
-  this is tested against real deletions on a throwaway APFS volume.
-- **Collect, then clean up.** Drag folders (or press **+**) into the Collector, check the total, and
-  move them to the Trash in one go. Nothing is deleted outright; you can put things back from the Trash.
-- **Safe by design.** Broom only reads file metadata. It never downloads iCloud files that are only in
-  the cloud, never sends anything over the network, and has no analytics.
+<p align="center">
+  <img src="docs/panel.png" width="461" alt="The menu-bar panel: a query reading 'node modules and dist folders', node_modules expanded to three projects and ticked, 3 selected, 297 MB, Move to Trash">
+</p>
 
-## Screenshots
+<p align="center">
+  <img src="docs/main.png" width="820" alt="The main window: disks and folders on the left, the sunburst in the middle, findings and the cleanup plan on the right">
+</p>
 
-| | |
-|---|---|
-| ![Results with findings](docs/results.png) | ![Scanning, with the chart filling in live](docs/live.png) |
-| **Results.** Findings, folder list and the full chart. | **Scanning.** Final folders in colour, the rest still counting. |
-| ![Zoomed into Library, hovering Caches](docs/zoom.png) | ![Collector with two items](docs/collector.png) |
-| **Explore.** Click a slice to zoom in; hover for sizes. | **Collector.** What deleting your selection frees, exactly. |
-
-<p align="center"><img src="docs/live-scan.gif" width="720" alt="A live scan, slowed down 8×"><br><sub>A real scan of a sample home folder, slowed down 8×.</sub></p>
-
-<sub>All screenshots and the video use a made-up home folder generated by
+<sub>Both screenshots use a made-up home folder generated by
 [`scripts/make-demo-home.py`](scripts/make-demo-home.py), not anyone's real files.</sub>
+
+## What it does
+
+- **Search and clean from the menu bar.** The 🧹 panel takes a line of text, in English or in the
+  Telugu you'd type on a phone (*node modules anni teesey*), and answers with groups: a finding from
+  the catalog, every folder with that name, a file extension, git worktrees, or a name pattern. Each
+  group expands to its folders with sizes and a reveal-in-Finder button.
+- **Safe or review, with a reason.** `node_modules` next to a `package.json` is safe; a `dist` folder
+  is "review" because not every `dist` is build output. Broom says why in one line and never
+  pre-ticks a group it only matched by name.
+- **Real savings.** On APFS, deleting a cloned or hard-linked file may free nothing. The number next
+  to **Move to Trash** counts clones and hard links once, and is tested against real deletions on a
+  throwaway APFS volume.
+- **A reader, optionally.** With a [Jev](https://typesafe.ai) key, each group gets a yes/no from the
+  classifier before it is offered as "safe"; with a chat-model key, free-form questions get a
+  second opinion on what you meant. Both are off without keys, and Broom works fully without them.
+  The model sees folder names and your question, never full paths.
+- **Live from the first second.** The chart appears straight away and fills in as Broom reads.
+  Folders turn from muted to full colour the moment their total is final, and you can click into
+  them before the scan finishes.
+- **Fast and exact.** A whole Mac (about 6 million files) in roughly 25 seconds; a home folder in a
+  few seconds. Sizes are allocated blocks, so they match Finder's "on disk". For the startup disk,
+  every other APFS volume gets an exact slice, so the chart adds up to the disk's used space to the
+  byte. The [performance notes](docs/PERFORMANCE.md) have the measurements.
+- **Findings.** Trash, Downloads, Xcode build files and archives, iOS device support and
+  simulators, iPhone backups, Docker, app caches, npm, Cargo, Gradle, Movies, Mail, `node_modules`,
+  Chrome's update leftovers. Each is **Safe to delete** or **Review first**, with a one-line reason.
+- **A cleanup plan, not a delete button.** Tick folders, findings or panel groups to stage them. The
+  plan shows what's selected, what's shared with other files, and what will actually free. **Review
+  & move to Trash** lists every path once more before anything moves.
+- **Safe by design.** Broom only reads file metadata, never downloads cloud-only files, never
+  sends anything over the network except the optional classifier calls, and has no analytics.
+- **The investigator.** While a scan runs, a small ligne-claire investigator sniffs around with a
+  magnifier and reports what it's seeing. Purely decorative, and the best part.
 
 ## Install
 
-### Download
-
-**[Download Petal 0.1.0 (DMG, 5.5 MB)](https://github.com/henrydennis/petal/releases/latest/download/Petal-0.1.0.dmg)** for Macs
-with Apple silicon (M1 or later) running macOS 13 or later.
-
-1. Open the DMG and drag **Broom** into **Applications**.
-2. Open Broom. This build isn't notarized by Apple yet, so macOS says it can't verify the app. Click
-   **Done**, then open **System Settings › Privacy & Security**, scroll down and click **Open Anyway**
-   next to the message about Broom. You only need to do this once.
-
-All releases are on the [Releases page](https://github.com/henrydennis/petal/releases).
-
 ### Build from source
 
-It takes a couple of minutes. **You need:** macOS 13 or later, the Xcode Command Line Tools (`xcode-select --install`), and
-[Rust](https://rustup.rs). The repository pins the toolchain in `rust-toolchain.toml`, so `rustup`
-fetches the right version automatically.
+**You need:** macOS 13 or later on Apple silicon, the Xcode Command Line Tools
+(`xcode-select --install`), and [Rust](https://rustup.rs). The toolchain is pinned in
+`rust-toolchain.toml`, so `rustup` fetches the right version.
 
 ```bash
-git clone https://github.com/henrydennis/petal.git
+git clone git@github.com:sriinnu/broom.git
+cd broom
+scripts/bundle.sh
 ```
 
-```bash
-cd broom && scripts/bundle.sh
-```
+That builds `dist/Broom.app`, signed ad hoc, so it runs on the Mac that built it. Drag it into
+**Applications** and open it. `scripts/bundle.sh --dmg` also makes a disk image, and
+`scripts/deploy.sh` builds and installs straight into /Applications.
 
-That builds `dist/Broom.app` (signed ad hoc, so it runs on the Mac that built it). Drag it into
-**Applications** and open it.
-`scripts/bundle.sh --dmg` also makes a disk image.
-
-Or run it straight from the source tree:
+Or run it from the source tree:
 
 ```bash
 cargo run --release
 ```
 
+### Releases
+
+Tagged releases are built, signed and published by the Release workflow; see
+[docs/RELEASING.md](docs/RELEASING.md). Download the DMG from the
+[Releases page](https://github.com/sriinnu/broom/releases), open it, drag **Broom** into
+**Applications**. If the build isn't notarized, macOS will say it can't verify the app: click
+**Done**, then **System Settings › Privacy & Security › Open Anyway**.
+
 ### Full Disk Access
 
 macOS keeps some folders private (Mail, Messages, Safari, other apps' data) unless an app has Full
-Disk Access. Broom works without it, but shows exactly how much it couldn't read, and offers a button
-that opens **System Settings › Privacy & Security › Full Disk Access**. Turn Broom on there; the card
-in Broom notices within a couple of seconds and offers to rescan.
+Disk Access. Broom works without it, shows exactly how much it couldn't read, and offers a button
+that opens **System Settings › Privacy & Security › Full Disk Access**. Turn Broom on there; Broom
+notices within a couple of seconds and offers to rescan. Access is tied to the app's signature, so a
+rebuilt ad-hoc app has to be granted again.
 
-When you run Broom from a terminal (`cargo run`), macOS asks about the terminal app instead of Broom.
+When you run Broom from a terminal (`cargo run`), macOS asks about the terminal app instead.
+
+### The reader (optional)
+
+Broom's own matcher handles the common questions on its own. To turn on the classifier, open
+**Settings › API keys** in the app and paste a key; it goes into the macOS keychain, never a file.
+Under `cargo run`, the environment works too:
+
+| Variable | Used for |
+|---|---|
+| `TYPESAFE_API_KEY` (or `JEV_API_KEY`) | Jev, the yes/no reader: "is this group what they asked for, and is it safe?" |
+| `LAYA_API_KEY` (or `AI_GATEWAY_API_KEY`) | a chat model for free-form questions; `LAYA_BASE_URL` and `LAYA_MODEL` override the endpoint |
 
 ## Using Broom
 
-The first time you open Broom it starts scanning your startup disk straight away. After that it opens
-on the **Disks** screen, with your volumes, **Scan Home Folder** and **Choose Folder…**.
+**Menu bar.** Click 🧹 to open the panel (the number next to it is how full the startup disk is).
+Type, then tick. `Enter` asks the reader when one is configured, `Esc` closes. Right-click or
+ctrl-click the 🧹 for the menu: open the window, rescan, quit.
 
-- **Hover** a slice or a row to see its size; the two stay in sync.
-- **Click** a folder (in the chart or the list) to zoom in. Click the centre, or use the breadcrumbs,
-  to go back up.
-- **Click a finding** to open its folder in the chart; press **+** on it to collect it.
-- In the list, **⌕** reveals an item in Finder and **+** adds it to the Collector.
-- **Move to Trash…** asks for confirmation, moves the collected items to the Trash, and updates every
-  total in place without rescanning.
+**Window.** Pick a disk or folder on the left. Hover a slice or a row to see its size; click to zoom
+in; click the centre, or use the breadcrumbs, to go back up. Tick a folder or a finding to stage it,
+or drag it onto the plan. The search box at the top takes the same questions the panel does.
 
 | Keys | Action |
 |---|---|
+| ⌘F | Search or ask |
+| ↑ ↓ | Move the selection |
+| → or Enter | Open the selected folder |
+| ← , ⌫, Esc or ⌘↑ | Go to the enclosing folder |
+| Space | Stage or unstage the selected row |
 | ⌘O | Choose a folder to scan |
 | ⌘R | Rescan |
-| ⌫, Esc or ⌘↑ | Go to the enclosing folder |
 | ⇧⌘D | Back to the Disks screen |
+| ⌘, | Settings |
 | ⌘Q | Quit |
 
 You can also pass a folder on the command line: `broom ~/Library`.
@@ -169,89 +181,112 @@ Exit codes: 0 done, 1 something failed (partial failures list what didn't move),
 src/
 ├── main.rs        app setup, menus, key bindings, command-line flags
 ├── cli.rs         headless scan / find / clean / trash for scripts and agents
-├── app.rs         the GPUI view: disks, scanning and results screens, sidebar, findings, collector
-├── scan.rs        parallel walk (outline → hotspots → depth-first), the flat Tree, volumes, frees_of
+├── app.rs         the window: disks rail, folder list, sunburst, findings, cleanup plan, review
+├── panel.rs       the menu-bar panel: query, groups, ticks, confirm, trash
+├── menubar.rs     the NSStatusItem (objc2), its menu, and where to hang the panel
+├── ask/           turning a question into groups: tokens, folder words, findings, worktrees,
+│   ├── mod.rs       patterns, kinds; dedupe; safety; the provider interface
+│   ├── jev.rs       Jev (typesafe.ai) yes/no questions per group
+│   └── laya.rs      chat-completion second opinion
+├── classify/      what kind of thing a path is (apps, caches, photos…), colours the chart by kind
+├── comic.rs       the investigator and the captions
+├── scan.rs        parallel walk (outline → hotspots → depth-first), the flat Tree, names index, frees_of
 ├── dirlist.rs     getattrlistbulk/openat directory listing, with a portable fallback
-├── live.rs        live per-folder totals during a scan, snapshots, and the live-chart benchmark
+├── live.rs        live per-folder totals during a scan, snapshots
 ├── disk.rs        the startup disk's APFS container: exact slices for the other volumes
 ├── findings.rs    the catalog of known space hogs and how to recognise them
-├── sunburst.rs    layout in angle space, painting with PathBuilder, polar hit-testing, colours
-├── motion.rs      easing segments between live snapshots
-├── eta.rs         progress (items vs. the volume's object count) and "about N s left"
+├── sunburst.rs    layout in angle space, painting, polar hit-testing, the six-hue ladder
+├── settings.rs    settings file, state dir (migrates from the Petal days)
+├── secrets.rs     keychain
 ├── onboarding.rs  first run and Full Disk Access detection
+├── motion.rs      easing segments between live snapshots
+├── eta.rs         progress and "about N s left"
 ├── clock.rs       the UI clock (lets the recorder pause time)
 └── snapshot.rs    dev tool: scripted input, screenshots and video recording
 ```
 
-1. **Outline.** The first two levels are listed by name in ~10 ms, so the chart has a shape at once.
-2. **Hotspots.** Known space hogs from the findings catalog are read next, in parallel, so findings
-   and the biggest slices are exact within a couple of seconds even on a full disk.
-3. **Main walk.** Everything else, depth-first across all cores, reusing the hotspot results. Every
-   folder in the top four levels has an atomic running total, and the UI snapshots those ten times a
-   second. A folder is marked final as soon as the walk leaves it.
-4. **Results.** The finished tree is a flat array of nodes. Findings resolve their exact savings in
-   the background (`scan::frees_of`), and results never wait for them.
+1. **Outline.** The first two levels are listed by name in about 10 ms, so the chart has a shape at once.
+2. **Hotspots.** Known space hogs are read next, in parallel, so findings and the biggest slices are
+   exact within a couple of seconds even on a full disk.
+3. **Main walk.** Everything else, depth-first across all cores. Folders in the top levels keep
+   atomic running totals the UI snapshots ten times a second.
+4. **Results.** The finished tree is a flat array of nodes with a lowercase name index, which is
+   what makes a panel query over two million nodes answer in well under a second. Findings resolve
+   their exact savings afterwards, one at a time on a small pool so they never starve the UI.
+5. **Ask.** A query becomes tokens (stop words in English and Telugu dropped, phrases normalised),
+   then groups: findings by alias, folder words from a table that knows which names need a manifest
+   next to them to count as safe, extensions, worktrees (a folder whose `.git` is a file), glob
+   patterns and kinds. Overlapping groups collapse to the most precise. If a reader is configured,
+   it votes on each group and is only trusted above a confidence floor.
 
 The UI is built with [GPUI](https://github.com/gpui-ce/gpui-ce) (the community edition of the
-framework behind the Zed editor), which renders everything on the GPU with Metal. The chart is painted
-with `PathBuilder` inside a `canvas`, and the folder list is a virtualised `uniform_list`.
+framework behind the Zed editor), which renders everything on the GPU with Metal. The menu-bar item
+is an `NSStatusItem` through objc2, and the panel is a non-activating panel window hung under it.
 
 ## Development
 
 ```bash
-cargo test                          # unit tests
-cargo test -- --ignored             # plus the APFS clone-accounting test (creates and deletes a small disk image)
+cargo test                                        # unit tests, including the ask engine
+cargo test -- --ignored                           # plus the APFS clone-accounting test (creates and deletes a small disk image)
 cargo run --release -- --bench-scan ~/Library 6   # headless scan benchmark (median of 6)
 cargo run --release -- --bench-live ~/Library 3   # how soon the live chart looks right
 cargo run --release -- --check-access             # does this process have Full Disk Access?
 ```
 
-`bench/ab.sh` runs two builds alternately and compares their medians, and refuses to report a result
-if the two scans disagree. See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for the method and the
-history of what was tried.
+`bench/ab.sh` runs two builds alternately and compares their medians. See
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+
+Dev hooks: `BROOM_OPEN_PANEL=1` pops the panel shortly after launch, `BROOM_PANEL_QUERY=…`
+pre-fills it, `BROOM_MB_DEBUG=1` logs menu-bar and query timings.
 
 ### Screenshots and video without Screen Recording permission
 
-With `--features snapshot`, Broom can drive its own window from a script and save PNGs, or record a
-video (needs `ffmpeg`). While recording, the app's clock and the scan pause during each frame's
-capture, so the video plays at the app's real speed and a smooth 30 fps no matter how long each
-capture takes. `slow-motion N` records the following steps N times slower, still at 30 fps.
+With `--features snapshot`, Broom drives its own windows from a script and saves PNGs, or records a
+video (needs `ffmpeg`). The screenshots above were made like this:
 
 ```bash
 scripts/make-demo-home.py /tmp/demo
-```
-
-```bash
-HOME=/tmp/demo/alex BROOM_HIDE_ACCESS=1 BROOM_VIDEO=/tmp/broom.mp4 \
-BROOM_SCRIPT="hide-pointer; until-done 10; wait 1; show-pointer; move 1100 700; glide 904 363 1; click; wait 2; quit" \
+HOME=/tmp/demo/alex BROOM_HIDE_ACCESS=1 BROOM_SNAPSHOT=/tmp/shots/readme \
+BROOM_SCRIPT="until-done 40; wait 2; shot main; panel; wait 1.5; panel-type node modules and dist folders; wait 5; panel-shot panel; quit" \
 cargo run --release --features snapshot -- /tmp/demo/alex
 ```
 
-Script steps: `wait S`, `glide X Y S`, `move X Y`, `click`, `until-done MAX`, `slow-motion N`,
-`hide-pointer`, `show-pointer`, `quit` (coordinates are in points within the window). For PNGs, set
-`BROOM_SNAPSHOT=/tmp/broom` instead and use `shot NAME` and `burst NAME COUNT MS`.
+Steps: `wait S`, `shot NAME`, `move X Y`, `click`, `hover`, `glide X Y S`, `until-done MAX`,
+`panel`, `panel-type WORDS`, `panel-click X Y`, `panel-shot NAME`, `slow-motion N`,
+`hide-pointer`, `show-pointer`, `quit`. Coordinates are points within the window. For video, set
+`BROOM_VIDEO=/tmp/broom.mp4` instead of `BROOM_SNAPSHOT`.
 
 ### Packaging for other Macs
 
-`scripts/bundle.sh` signs ad hoc by default, which is fine on the Mac that built it. To distribute,
-sign with a Developer ID and notarize:
+`scripts/bundle.sh` signs ad hoc by default. To distribute, sign with a Developer ID and notarize:
 
 ```bash
 BROOM_SIGN_ID="Developer ID Application: Your Name (TEAMID)" BROOM_NOTARY_PROFILE=broom-notary scripts/bundle.sh --dmg
 ```
 
-(Save the notary profile once with `xcrun notarytool store-credentials broom-notary`.) macOS ties
-Full Disk Access to the code signature, so a stable Developer ID signature also keeps access granted
-across updates.
+(Save the notary profile once with `xcrun notarytool store-credentials broom-notary`.) The Release
+workflow does the same from repository secrets; see [docs/RELEASING.md](docs/RELEASING.md).
+
+### The icon
+
+`scripts/make-icon.py` draws the investigator in ligne claire (flat fills, one contour weight, no
+gradients or gloss) with the character's own palette from `src/comic.rs`, and builds
+`packaging/AppIcon.icns` plus a size sheet:
+
+```bash
+uv run --with pillow python3 -I scripts/make-icon.py packaging
+```
 
 ## Credits
 
-- Inspired by [DaisyDisk](https://daisydiskapp.com), which pioneered the sunburst disk explorer on
-  the Mac. Broom is an independent project, not affiliated with it.
+- Broom started as a fork of [Petal](https://github.com/henrydennis/petal) by Henry Dennis, which
+  built the scanner, the exact APFS accounting and the live sunburst. The menu-bar panel, the ask
+  engine, the redesigned window and the investigator are Broom's.
+- The sunburst idea goes back to [DaisyDisk](https://daisydiskapp.com). Broom is an independent
+  project, not affiliated with it.
 - Built on [GPUI CE](https://github.com/gpui-ce/gpui-ce), [rayon](https://github.com/rayon-rs/rayon),
-  [palette](https://github.com/Ogeon/palette) and [trash](https://github.com/Byron/trash-rs).
-- The promo video was edited in Tesseract with motion graphics made in
-  [Remotion](https://www.remotion.dev), and narration and music from [ElevenLabs](https://elevenlabs.io).
+  [objc2](https://github.com/madsmtm/objc2), [palette](https://github.com/Ogeon/palette) and
+  [trash](https://github.com/Byron/trash-rs).
 
 ## License
 

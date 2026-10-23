@@ -79,7 +79,7 @@ pub struct Settings {
     pub banner_seconds: u64,
     /// Keep the colouring across a rescan and across launches.
     pub color_by: ColorBy,
-    /// Show the ✿ extra in the menu bar.
+    /// Show the 🧹 extra in the menu bar.
     pub menubar: bool,
     /// Scan this when Broom opens with no folder argument.
     pub default_root: String,

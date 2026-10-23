@@ -134,7 +134,7 @@ fn main() {
         ]);
 
         // Broom is a menu-bar utility: closing the window leaves the app (and
-        // its ✿ item) running; "Open Broom" in that menu brings the window
+        // its 🧹 item) running; "Open Broom" in that menu brings the window
         // back, and Quit — the menu, ⌘Q or the Dock — is what ends it.
         app::open_main_window(initial, loaded, cx);
         app::arm_reopen(cx);
