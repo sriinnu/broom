@@ -1,22 +1,55 @@
 # Releasing Broom
 
-Everything reaches `main` through a branch and a pull request; `main` refuses
-direct pushes, force pushes, unsigned commits and merges that skip CI.
+Everything reaches `main` through a branch and a pull request. Two rulesets
+enforce it, applied from this repository and visible under Settings › Rules:
+
+- `.github/rulesets/main.json`: `main` refuses direct pushes, force pushes,
+  deletion, unsigned commits, merge commits (squash or rebase only) and any
+  merge without a green **Build and test (macOS)**. No bypass for anyone,
+  owner included.
+- `.github/rulesets/tags.json`: `v*` tags must be signed and can never be
+  moved or deleted.
+
+Re-apply either with `gh api -X POST repos/sriinnu/broom/rulesets --input <file>`
+(or `PUT …/rulesets/<id>` to update).
+
+## Cutting a release
 
 1. Bump `version` in `Cargo.toml` on a branch, open a PR, merge it.
-2. On `main`, create a signed tag and push it:
+2. On `main`, create a signed, annotated tag and push it:
 
+       git switch main && git pull
        git tag -s v0.2.0 -m "Broom 0.2.0"
        git push origin v0.2.0
 
-   Tags sign by default here (`tag.gpgSign true`), with the same SSH key as
-   commits.
-3. The Release workflow builds `Broom.app` and `Broom.dmg`, signs and
-   notarizes them when the Developer ID secrets are configured, and publishes
-   a GitHub release from the tag with the DMG attached.
+   Tags sign by default here (`tag.gpgSign true`) with the same SSH key as
+   commits, so the Titan key needs a touch.
+3. The Release workflow refuses to run unless GitHub verifies the tag's
+   signature and the tag is on `main`. It then builds `Broom.app` and the
+   DMG, signs and notarizes them when the Developer ID secrets are set,
+   writes `SHA256SUMS`, attests build provenance (public repositories only),
+   and publishes a GitHub release from the tag with the DMG and checksums.
 
-Secrets the workflow looks for (all optional; without them the DMG is ad hoc
-signed and runs only on the Mac that built it):
+Verify a download:
+
+    shasum -a 256 -c SHA256SUMS
+    gh attestation verify Broom-0.2.0.dmg -R sriinnu/broom   # when attested
+
+## Supply chain
+
+- Every action in the workflows is pinned to a commit, with the tag in a
+  comment. Dependabot opens a PR when one moves.
+- The repository allows only GitHub-owned actions plus `dtolnay/rust-toolchain`,
+  `Swatinem/rust-cache` and `actions/attest-build-provenance`
+  (Settings › Actions › General).
+- Workflow tokens default to read-only; the release job asks for exactly the
+  write scopes it needs.
+- `cargo build --locked` in CI fails if `Cargo.lock` doesn't match `Cargo.toml`.
+
+## Secrets
+
+All optional; without them the DMG is ad hoc signed and runs only on the Mac
+that built it.
 
 | Secret | What |
 |---|---|

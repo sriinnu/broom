@@ -1,0 +1,13 @@
+# Keeps the commit-pinned actions and Cargo dependencies current, one PR each,
+# through the same branch → PR → main path as everything else.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
