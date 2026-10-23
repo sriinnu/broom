@@ -13,6 +13,13 @@ enforce it, applied from this repository and visible under Settings › Rules:
 Re-apply either with `gh api -X POST repos/sriinnu/broom/rulesets --input <file>`
 (or `PUT …/rulesets/<id>` to update).
 
+**While the repository is private** the live `main` ruleset has the
+`required_status_checks` rule removed: macOS runners bill minutes on a
+private repository and the job never starts, which would block every merge.
+`main.json` keeps the rule as the intended state. The day the repository
+goes public, re-apply the file as is (`PUT …/rulesets/25717486`) and CI is
+required again.
+
 ## Cutting a release
 
 1. Bump `version` in `Cargo.toml` on a branch, open a PR, merge it.
