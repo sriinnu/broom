@@ -3410,8 +3410,8 @@ fn startup_fraction(volumes: &[Volume]) -> f32 {
 }
 
 /// What the menu-bar menu shows per volume: name, capacity, free space.
-fn volume_lines(volumes: &[Volume]) -> Vec<(String, u64, u64)> {
-    volumes.iter().map(|v| (v.name.clone(), v.total, v.free)).collect()
+fn volume_lines(volumes: &[Volume]) -> Vec<(String, u64, u64, u64)> {
+    volumes.iter().map(|v| (v.name.clone(), v.total, v.free, v.purgeable)).collect()
 }
 
 impl Broom {
@@ -3580,7 +3580,22 @@ impl Broom {
                         "{} free of {}",
                         format_size(volume.free),
                         format_size(volume.total)
-                    ))),
+                    )))
+                    // About This Mac counts what macOS would purge on demand as
+                    // available; say so, so its bigger number doesn't look like a bug.
+                    .when(volume.purgeable >= menubar::PURGEABLE_WORTH_A_WORD, |d| {
+                        d.child(
+                            div()
+                                .id(("purgeable", i))
+                                .text_xs()
+                                .text_color(rgb(MUTED))
+                                .truncate()
+                                .tooltip(|_, cx| {
+                                    cx.new(|_| Tip("Local Time Machine snapshots, caches and re-downloadable iCloud files. macOS frees them on demand; About This Mac counts them as available.".into())).into()
+                                })
+                                .child(format!("+{} purgeable", format_size(volume.purgeable))),
+                        )
+                    }),
             );
         }
 
