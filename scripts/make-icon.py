@@ -207,6 +207,8 @@ def main():
     icon = draw_icon()
     small = draw_icon_small()
     icon.save(os.path.join(out_dir, "AppIcon.png"))
+    # The About card embeds this one (src/app.rs); keep it small.
+    icon.resize((256, 256), Image.LANCZOS).save(os.path.join(out_dir, "AppIcon-256.png"), optimize=True)
     preview(icon, small, os.path.join(out_dir, "icon-sizes-preview.png"))
     with tempfile.TemporaryDirectory() as tmp:
         iconset = os.path.join(tmp, "AppIcon.iconset")
