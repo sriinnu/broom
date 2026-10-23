@@ -386,14 +386,14 @@ fn trash_paths(paths: &[PathBuf], quiet: bool) -> Trashed {
     let mut gone = Vec::new();
     let mut failed = Vec::new();
     for p in paths {
-        match trash::delete(p) {
+        match crate::trashcan::send(std::slice::from_ref(p)) {
             Ok(()) => {
                 if !quiet {
                     eprintln!("trashed {}", tilde(p));
                 }
                 gone.push(p.clone());
             }
-            Err(e) => failed.push((p.clone(), e.to_string())),
+            Err(e) => failed.push((p.clone(), e)),
         }
     }
     Trashed { gone, failed, frees }
