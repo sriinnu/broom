@@ -18,6 +18,9 @@ use objc2_foundation::NSString;
 
 use crate::scan::format_size;
 
+/// Below this, purgeable space isn't worth a mention.
+pub const PURGEABLE_WORTH_A_WORD: u64 = 500_000_000;
+
 /// How many volume lines the menu reserves up front; extra slots stay hidden.
 const MAX_VOLUME_LINES: usize = 6;
 
@@ -202,11 +205,13 @@ impl MenuBar {
     }
 
     /// Refresh the bar's percentage and the volume lines; main thread only.
-    pub fn update(&self, startup_fraction: f32, volumes: &[(String, u64, u64)]) {        self.button.setTitle(&ns(&title_text(startup_fraction)));
+    pub fn update(&self, startup_fraction: f32, volumes: &[(String, u64, u64, u64)]) {
+        self.button.setTitle(&ns(&title_text(startup_fraction)));
         for (ix, line) in self.lines.iter().enumerate() {
             match volumes.get(ix) {
-                Some((name, total, free)) => {
-                    line.setTitle(&ns(&format!("{name} — {} free of {}", format_size(*free), format_size(*total))));
+                Some((name, total, free, purgeable)) => {
+                    let extra = if *purgeable >= PURGEABLE_WORTH_A_WORD { format!(" (+{} purgeable)", format_size(*purgeable)) } else { String::new() };
+                    line.setTitle(&ns(&format!("{name} — {} free of {}{extra}", format_size(*free), format_size(*total))));
                     line.setHidden(false);
                 }
                 None => line.setHidden(true),

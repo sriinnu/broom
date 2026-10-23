@@ -835,7 +835,12 @@ pub struct Volume {
     pub name: String,
     pub path: PathBuf,
     pub total: u64,
+    /// Bytes free right now (`statvfs`): what a write can use this second.
     pub free: u64,
+    /// Bytes macOS would free on demand on top of that: local Time Machine
+    /// snapshots, caches, iCloud files it can re-download. About This Mac and
+    /// Finder count these as available; `free + purgeable` is their number.
+    pub purgeable: u64,
 }
 
 fn statvfs(path: &Path) -> Option<(u64, u64)> {
@@ -848,6 +853,22 @@ fn statvfs(path: &Path) -> Option<(u64, u64)> {
     }
     let frsize = stat.f_frsize as u64;
     Some((stat.f_blocks as u64 * frsize, stat.f_bavail as u64 * frsize))
+}
+
+/// What macOS would purge on demand beyond `free`: the volume's capacity
+/// "for important usage" (the figure About This Mac shows) minus what is free
+/// right now. Zero when the system doesn't say.
+fn purgeable(path: &Path, free: u64) -> u64 {
+    use objc2_foundation::{NSArray, NSNumber, NSString, NSURL, NSURLVolumeAvailableCapacityForImportantUsageKey};
+    let Some(path) = path.to_str() else { return 0 };
+    let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+    // SAFETY: reading a Foundation string constant.
+    let key = unsafe { NSURLVolumeAvailableCapacityForImportantUsageKey };
+    let keys = NSArray::from_slice(&[key]);
+    let Ok(values) = url.resourceValuesForKeys_error(&keys) else { return 0 };
+    let Some(value) = values.objectForKey(key) else { return 0 };
+    let Some(number) = value.downcast_ref::<NSNumber>() else { return 0 };
+    number.unsignedLongLongValue().saturating_sub(free)
 }
 
 /// The startup disk plus anything mounted under /Volumes.
@@ -877,14 +898,16 @@ pub fn volumes() -> Vec<Volume> {
             }
             if let Some((total, free)) = statvfs(&path) {
                 if total > 0 {
-                    others.push(Volume { name, path, total, free });
+                    let purgeable = purgeable(&path, free);
+                    others.push(Volume { name, path, total, free, purgeable });
                 }
             }
         }
     }
     let mut volumes = Vec::new();
     if let Some((total, free)) = statvfs(Path::new("/")) {
-        volumes.push(Volume { name: root_name, path: PathBuf::from("/"), total, free });
+        let purgeable = purgeable(Path::new("/"), free);
+        volumes.push(Volume { name: root_name, path: PathBuf::from("/"), total, free, purgeable });
     }
     others.sort_by(|a, b| a.name.cmp(&b.name));
     volumes.extend(others);
