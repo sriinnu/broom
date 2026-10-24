@@ -168,6 +168,15 @@ pub fn install(window: &mut Window, cx: &mut Context<Broom>) {
                     })
                     .ok();
                 }
+                // `settings`: open the Settings card.
+                "settings" => {
+                    cx.update(|window, cx| {
+                        if let Some(broom) = crate::app::broom() {
+                            broom.update(cx, |b, cx| b.open_settings(&crate::app::OpenSettings, window, cx));
+                        }
+                    })
+                    .ok();
+                }
                 "quit" => {
                     cx.update(|_, cx| cx.quit()).ok();
                     return;
