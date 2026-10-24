@@ -19,6 +19,7 @@ use gpui_ce_elements::editable_text::{EditableTextState, StringStorage, TextChan
 
 use crate::app::{self, ScanState, Snapshot};
 use crate::comic;
+use crate::theme::{self, colors};
 use crate::trashcan;
 use crate::ask::{self, CandidateGroup, Intent, ProviderError, Scope};
 use crate::findings::Safety;
@@ -31,15 +32,6 @@ const HEIGHT: f32 = 540.;
 /// Rows shown per expanded group before "+ N more".
 const MAX_ROWS: usize = 40;
 
-const BG: u32 = 0x1c1d21;
-const CARD: u32 = 0x25272d;
-const CARD_HOVER: u32 = 0x33363c;
-const BORDER: u32 = 0x34363c;
-const TEXT: u32 = 0xe8e9ec;
-const MUTED: u32 = 0x8d919a;
-const DANGER: u32 = 0xe5484d;
-const SAFE: u32 = 0x3fb950;
-const REVIEW: u32 = 0xd29922;
 
 thread_local! {
     static PANEL: std::cell::RefCell<Option<WindowHandle<Panel>>> = const { std::cell::RefCell::new(None) };
@@ -603,14 +595,14 @@ impl Panel {
             .pb_2()
             .child(div().text_base().child("🧹"))
             .child(div().font_weight(FontWeight::SEMIBOLD).child("Broom"))
-            .child(div().flex_1().min_w_0().text_xs().text_color(rgb(MUTED)).truncate().text_right().child(status))
+            .child(div().flex_1().min_w_0().text_xs().text_color(rgb(colors().muted)).truncate().text_right().child(status))
             .child(
                 div()
                     .id("open-main")
                     .text_xs()
-                    .text_color(rgb(MUTED))
+                    .text_color(rgb(colors().muted))
                     .cursor_pointer()
-                    .hover(|s| s.text_color(rgb(TEXT)))
+                    .hover(|s| s.text_color(rgb(colors().text)))
                     .child("Open ↗")
                     .on_click(cx.listener(|_, _, _, cx| {
                         app::open_requested();
@@ -623,6 +615,9 @@ impl Panel {
         div().px_3().pb_2().child(
             text_input("broom-query")
                 .placeholder("node_modules, dist, worktrees, old dmg…")
+                .placeholder_color(theme::overlay(0.5))
+                .caret_color(theme::input_caret())
+                .selection_color(theme::input_selection())
                 .state(self.query.downgrade())
                 .caret_blink_interval_500ms()
                 .w_full()
@@ -631,24 +626,24 @@ impl Panel {
                 .min_h_auto()
                 .flex()
                 .items_center()
-                .rounded_lg()
+                .rounded(theme::radius(8.))
                 .border_1()
-                .border_color(rgb(BORDER))
-                .bg(rgb(CARD))
+                .border_color(rgb(colors().border))
+                .bg(rgb(colors().popover_card))
                 .text_size(px(13.)),
         )
     }
 
     fn render_note(&self) -> Option<impl IntoElement> {
         if self.searching && matches!(self.phase, Phase::Idle) {
-            return Some(div().px_4().pb_2().text_xs().text_color(rgb(MUTED)).child(SharedString::from("Searching…")));
+            return Some(div().px_4().pb_2().text_xs().text_color(rgb(colors().muted)).child(SharedString::from("Searching…")));
         }
         let (text, color) = match &self.phase {
             Phase::Idle => return None,
-            Phase::Thinking => ("Sending your words (not your files) to the reader…".into(), MUTED),
-            Phase::Note(n) => (n.clone(), MUTED),
-            Phase::Trashing => ("Moving to the Trash…".into(), MUTED),
-            Phase::Done(n) => (n.clone(), SAFE),
+            Phase::Thinking => ("Sending your words (not your files) to the reader…".into(), colors().muted),
+            Phase::Note(n) => (n.clone(), colors().muted),
+            Phase::Trashing => ("Moving to the Trash…".into(), colors().muted),
+            Phase::Done(n) => (n.clone(), colors().safe),
         };
         Some(div().px_4().pb_2().text_xs().text_color(rgb(color)).child(text))
     }
@@ -670,7 +665,7 @@ impl Panel {
                 .flex_col()
                 .gap_3()
                 .child(comic::investigator(caption, None, 64.0))
-                .child(div().px_2().text_xs().text_color(rgb(MUTED)).text_center().child(if files > 0 {
+                .child(div().px_2().text_xs().text_color(rgb(colors().muted)).text_center().child(if files > 0 {
                     format!("{} files · {} read so far. Results land the moment the scan is done.", format_count(files), format_size(bytes))
                 } else {
                     "The first answer needs one read of your home folder.".to_string()
@@ -683,7 +678,7 @@ impl Panel {
         } else {
             format!("Nothing in {} is called that. Try another word, or press Enter to let the reader match it against the known hogs.", self.root_name()).into()
         };
-        div().px_4().py_6().text_sm().text_color(rgb(MUTED)).text_center().child(text)
+        div().px_4().py_6().text_sm().text_color(rgb(colors().muted)).text_center().child(text)
     }
 
     fn render_groups(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -691,7 +686,7 @@ impl Panel {
         let tree = snapshot.tree.clone();
         let mut list = div().flex().flex_col().gap_1();
         if self.text(cx).is_empty() {
-            list = list.child(div().px_1().pb_1().text_xs().text_color(rgb(MUTED)).child("Known space hogs. Or type what you're after."));
+            list = list.child(div().px_1().pb_1().text_xs().text_color(rgb(colors().muted)).child("Known space hogs. Or type what you're after."));
         }
         for (gix, group) in self.groups.iter().enumerate() {
             let deletable = self.deletable(gix);
@@ -699,12 +694,12 @@ impl Panel {
             let state = if on == 0 { Check::Off } else if on == deletable.len() { Check::On } else { Check::Some };
             let expanded = self.expanded.contains(&gix);
             let (pill, color) = match group.safety {
-                Safety::Safe => ("safe", SAFE),
-                Safety::Review => ("review", REVIEW),
+                Safety::Safe => ("safe", colors().safe),
+                Safety::Review => ("review", colors().review),
             };
             // "node_modules · 2.1 GB in 14 places" → name, then the numbers muted.
             let (name, places) = group.label.split_once(" · ").map(|(a, b)| (a.to_string(), b.to_string())).unwrap_or((group.label.to_string(), String::new()));
-            let mut card = div().id(("group", gix)).rounded_lg().bg(rgb(CARD)).border_1().border_color(rgb(BORDER)).flex().flex_col();
+            let mut card = div().id(("group", gix)).rounded(theme::radius(8.)).bg(rgb(colors().popover_card)).border_1().border_color(rgb(colors().border)).flex().flex_col();
             card = card.child(
                 div()
                     .id(("group-head", gix))
@@ -714,7 +709,7 @@ impl Panel {
                     .px_2()
                     .py_2()
                     .cursor_pointer()
-                    .hover(|s| s.bg(rgb(CARD_HOVER)))
+                    .hover(|s| s.bg(rgb(colors().card_hover)))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if !this.expanded.remove(&gix) {
                             this.expanded.insert(gix);
@@ -733,14 +728,14 @@ impl Panel {
                             .flex()
                             .flex_col()
                             .child(div().flex().items_center().gap_2().child(div().font_weight(FontWeight::MEDIUM).truncate().child(name)).child(
-                                div().text_xs().px_1p5().rounded_full().text_color(rgb(color)).bg(gpui::hsla(0., 0., 1., 0.06)).child(pill),
+                                div().text_xs().px_1p5().rounded_full().text_color(rgb(color)).bg(theme::overlay(0.06)).child(pill),
                             ))
-                            .child(div().text_xs().text_color(rgb(MUTED)).truncate().child(if places.is_empty() { group.detail.clone() } else { format!("{places} · {}", group.detail) })),
+                            .child(div().text_xs().text_color(rgb(colors().muted)).truncate().child(if places.is_empty() { group.detail.clone() } else { format!("{places} · {}", group.detail) })),
                     )
-                    .child(div().text_xs().text_color(rgb(MUTED)).child(if expanded { "▾" } else { "▸" })),
+                    .child(div().text_xs().text_color(rgb(colors().muted)).child(if expanded { "▾" } else { "▸" })),
             );
             if expanded {
-                let mut rows = div().flex().flex_col().border_t_1().border_color(rgb(BORDER)).py_1();
+                let mut rows = div().flex().flex_col().border_t_1().border_color(rgb(colors().border)).py_1();
                 for &ix in group.nodes.iter().take(MAX_ROWS) {
                     let node = &tree.nodes[ix];
                     let allowed = deletable.contains(&ix);
@@ -756,7 +751,7 @@ impl Panel {
                             .pl_2()
                             .pr_2()
                             .py_1()
-                            .when(allowed, |d| d.cursor_pointer().hover(|s| s.bg(rgb(CARD_HOVER))))
+                            .when(allowed, |d| d.cursor_pointer().hover(|s| s.bg(rgb(colors().card_hover))))
                             .when(allowed, |d| {
                                 d.on_click(cx.listener(move |this, _, _, cx| {
                                     this.toggle_node(ix, cx);
@@ -771,18 +766,18 @@ impl Panel {
                                     .flex()
                                     .flex_col()
                                     .child(div().text_sm().truncate().child(format!("{}{}", node.name, if node.kind == Kind::Dir { "/" } else { "" })))
-                                    .child(div().text_xs().text_color(rgb(MUTED)).truncate().child(shown)),
+                                    .child(div().text_xs().text_color(rgb(colors().muted)).truncate().child(shown)),
                             )
-                            .child(div().text_xs().text_color(rgb(MUTED)).font_family("Menlo").flex_none().child(format_size(node.size)))
+                            .child(div().text_xs().text_color(rgb(colors().muted)).font_family(theme::current().mono).flex_none().child(format_size(node.size)))
                             .child(
                                 div()
                                     .id(("reveal", ix))
                                     .text_xs()
-                                    .text_color(rgb(MUTED))
+                                    .text_color(rgb(colors().muted))
                                     .px_1()
-                                    .rounded_md()
+                                    .rounded(theme::radius(6.))
                                     .cursor_pointer()
-                                    .hover(|s| s.text_color(rgb(TEXT)).bg(rgb(BORDER)))
+                                    .hover(|s| s.text_color(rgb(colors().text)).bg(rgb(colors().border)))
                                     .child("⌕")
                                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                                     .on_click(cx.listener(move |_, _, _, cx| {
@@ -793,7 +788,7 @@ impl Panel {
                     );
                 }
                 if group.nodes.len() > MAX_ROWS {
-                    rows = rows.child(div().px_3().py_1().text_xs().text_color(rgb(MUTED)).child(format!(
+                    rows = rows.child(div().px_3().py_1().text_xs().text_color(rgb(colors().muted)).child(format!(
                         "+ {} more, ticked with the group",
                         group.nodes.len() - MAX_ROWS
                     )));
@@ -810,9 +805,9 @@ impl Panel {
         let count = selection.len();
         let size = self.selected_size();
         let busy = matches!(self.phase, Phase::Trashing);
-        let mut foot = div().flex().items_center().gap_2().px_3().py_2().border_t_1().border_color(rgb(BORDER)).bg(rgb(BG));
+        let mut foot = div().flex().items_center().gap_2().px_3().py_2().border_t_1().border_color(rgb(colors().border)).bg(rgb(colors().bg));
         if count == 0 {
-            return foot.child(div().text_xs().text_color(rgb(MUTED)).child("Tick what should go. Enter asks the reader. Esc closes."));
+            return foot.child(div().text_xs().text_color(rgb(colors().muted)).child("Tick what should go. Enter asks the reader. Esc closes."));
         }
         let frees_text = match self.frees {
             Some(f) if f + size / 100 < size => format!("{} back once the Trash is emptied · {} is shared with files that stay", format_size(f), format_size(size - f)),
@@ -826,7 +821,7 @@ impl Panel {
                 .flex()
                 .flex_col()
                 .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(format!("{count} selected · {}", format_size(size))))
-                .child(div().text_xs().text_color(rgb(MUTED)).truncate().child(frees_text)),
+                .child(div().text_xs().text_color(rgb(colors().muted)).truncate().child(frees_text)),
         );
         if self.confirming {
             foot = foot
@@ -835,11 +830,11 @@ impl Panel {
                         .id("cancel")
                         .px_3()
                         .py_1()
-                        .rounded_md()
+                        .rounded(theme::radius(6.))
                         .border_1()
-                        .border_color(rgb(BORDER))
+                        .border_color(rgb(colors().border))
                         .cursor_pointer()
-                        .hover(|s| s.bg(rgb(CARD_HOVER)))
+                        .hover(|s| s.bg(rgb(colors().card_hover)))
                         .child("Cancel")
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.confirming = false;
@@ -851,9 +846,9 @@ impl Panel {
                         .id("go")
                         .px_3()
                         .py_1()
-                        .rounded_md()
-                        .bg(rgb(DANGER))
-                        .text_color(rgb(0xffffff))
+                        .rounded(theme::radius(6.))
+                        .bg(rgb(colors().danger))
+                        .text_color(rgb(colors().on_danger))
                         .font_weight(FontWeight::MEDIUM)
                         .cursor_pointer()
                         .hover(|s| s.opacity(0.9))
@@ -866,9 +861,9 @@ impl Panel {
                     .id("review")
                     .px_3()
                     .py_1()
-                    .rounded_md()
-                    .bg(rgb(if busy { BORDER } else { DANGER }))
-                    .text_color(rgb(0xffffff))
+                    .rounded(theme::radius(6.))
+                    .bg(rgb(if busy { colors().border } else { colors().danger }))
+                    .text_color(rgb(colors().on_danger))
                     .font_weight(FontWeight::MEDIUM)
                     .cursor_pointer()
                     .hover(|s| s.opacity(0.9))
@@ -898,15 +893,15 @@ fn checkbox(id: impl Into<gpui::ElementId>, state: Check, disabled: bool) -> gpu
         .id(id)
         .flex_none()
         .size(px(16.))
-        .rounded_sm()
+        .rounded(theme::radius(4.))
         .border_1()
-        .border_color(rgb(if on { DANGER } else { MUTED }))
-        .bg(if on { rgb(DANGER) } else { rgb(0x00000000) })
+        .border_color(rgb(if on { colors().danger } else { colors().muted }))
+        .bg(if on { rgb(colors().danger) } else { rgb(0x00000000) })
         .flex()
         .items_center()
         .justify_center()
         .text_xs()
-        .text_color(rgb(0xffffff))
+        .text_color(rgb(colors().on_danger))
         .when(disabled, |d| d.opacity(0.3))
         .when(!disabled, |d| d.cursor_pointer())
         .child(match state {
@@ -947,7 +942,7 @@ impl Render for Panel {
                 .flex_col()
                 .gap_2()
                 .child(div().flex_1().min_h_0().w_full().child(trashcan::stage(drop.clone())))
-                .child(div().text_xs().text_color(rgb(MUTED)).text_center().pb_2().child(format!(
+                .child(div().text_xs().text_color(rgb(colors().muted)).text_center().pb_2().child(format!(
                     "{landed} of {} in the bin · {}",
                     drop.total(),
                     format_size(bytes)
@@ -963,13 +958,13 @@ impl Render for Panel {
             .size_full()
             .flex()
             .flex_col()
-            .rounded_xl()
+            .rounded(theme::radius(12.))
             .border_1()
-            .border_color(rgb(BORDER))
-            .bg(gpui::hsla(0.65, 0.05, 0.11, 0.97))
-            .text_color(rgb(TEXT))
+            .border_color(rgb(colors().border))
+            .bg(theme::alpha(colors().bg, 0.97))
+            .text_color(rgb(colors().text))
             .text_sm()
-            .font_family(".SystemUIFont")
+            .font_family(theme::current().font)
             .overflow_hidden()
             .child(self.render_header(cx))
             .child(self.render_search())

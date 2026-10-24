@@ -70,10 +70,11 @@ mod tests {
     /// The second claim in a row finds the first and yields to it.
     #[test]
     fn second_claim_yields() {
+        let _guard = settings::STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Not temp_dir(): macOS caps a socket path at 104 bytes and /var/folders/… is near it.
         let dir = PathBuf::from(format!("/tmp/broom-single-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        // SAFETY: tests in this module are the only readers of these variables.
+        // SAFETY: the lock above serialises every test that sets these variables.
         unsafe {
             std::env::set_var("BROOM_STATE_DIR", &dir);
             std::env::remove_var("BROOM_SNAPSHOT");
