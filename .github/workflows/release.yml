@@ -53,13 +53,17 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k ci build.keychain
           rm /tmp/cert.p12
       - name: Store notary credentials (when configured)
+        # An App Store Connect API key (Team key): the .p8 base64-encoded, its key ID
+        # and the issuer ID.
         env:
-          APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
-          TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
-          APP_PASSWORD: ${{ secrets.NOTARY_APP_PASSWORD }}
+          API_KEY_BASE64: ${{ secrets.NOTARY_API_KEY }}
+          KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
         run: |
-          if [ -z "$APPLE_ID" ]; then echo "no notary credentials configured; skipping notarization"; exit 0; fi
-          xcrun notarytool store-credentials broom-notary --apple-id "$APPLE_ID" --team-id "$TEAM_ID" --password "$APP_PASSWORD"
+          if [ -z "$API_KEY_BASE64" ]; then echo "no notary credentials configured; skipping notarization"; exit 0; fi
+          echo "$API_KEY_BASE64" | base64 --decode > /tmp/notary.p8
+          xcrun notarytool store-credentials broom-notary --key /tmp/notary.p8 --key-id "$KEY_ID" --issuer "$ISSUER_ID"
+          rm /tmp/notary.p8
           echo "BROOM_NOTARY_PROFILE=broom-notary" >> "$GITHUB_ENV"
       - name: Build, sign and notarize
         env:

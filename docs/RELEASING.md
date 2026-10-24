@@ -63,7 +63,8 @@ that built it.
 | `DEVELOPER_ID_P12` | base64 of the Developer ID Application certificate (.p12) |
 | `DEVELOPER_ID_P12_PASSWORD` | its password |
 | `DEVELOPER_ID_SIGN_ID` | e.g. `Developer ID Application: Name (TEAMID)` |
-| `NOTARY_APPLE_ID`, `NOTARY_TEAM_ID`, `NOTARY_APP_PASSWORD` | notarytool credentials (an app-specific password) |
+| `NOTARY_API_KEY` | base64 of the App Store Connect API key (`AuthKey_<id>.p8`, a Team key) |
+| `NOTARY_KEY_ID`, `NOTARY_ISSUER_ID` | that key's ID and its issuer ID |
 
 Locally, `scripts/bundle.sh --dmg` does the same build; `scripts/deploy.sh`
 builds and installs to /Applications.
