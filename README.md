@@ -80,6 +80,15 @@ for the usual space hogs, and a cleanup plan you stage with checkboxes before an
 
 ## Install
 
+### Homebrew
+
+```bash
+brew install sriinnu/tap/broom
+```
+
+That installs **Broom** into /Applications and puts the `broom` command on your PATH. `brew upgrade`
+picks up new releases; `brew uninstall --zap broom` also removes its settings.
+
 ### Build from source
 
 **You need:** macOS 13 or later on Apple silicon, the Xcode Command Line Tools
@@ -104,11 +113,11 @@ cargo run --release
 
 ### Releases
 
-Tagged releases are built, signed and published by the Release workflow; see
-[docs/RELEASING.md](docs/RELEASING.md). Download the DMG from the
+Tagged releases are built, signed with a Developer ID, notarized by Apple and published by the
+Release workflow; see [docs/RELEASING.md](docs/RELEASING.md). Download the DMG from the
 [Releases page](https://github.com/sriinnu/broom/releases), open it, drag **Broom** into
-**Applications**. If the build isn't notarized, macOS will say it can't verify the app: click
-**Done**, then **System Settings › Privacy & Security › Open Anyway**.
+**Applications**. Each release lists its SHA-256 in `SHA256SUMS`, and
+`gh attestation verify Broom-<version>.dmg -R sriinnu/broom` checks it was built by that workflow.
 
 ### Full Disk Access
 

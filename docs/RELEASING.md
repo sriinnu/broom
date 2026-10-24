@@ -36,6 +36,9 @@ required again.
    DMG, signs and notarizes them when the Developer ID secrets are set,
    writes `SHA256SUMS`, attests build provenance (public repositories only),
    and publishes a GitHub release from the tag with the DMG and checksums.
+4. Bump the Homebrew cask: in [sriinnu/homebrew-tap](https://github.com/sriinnu/homebrew-tap),
+   set `version` and `sha256` (from the release's `SHA256SUMS`) in
+   `Casks/broom.rb` on a branch `broom-X.Y.Z`, open a PR, merge it.
 
 Verify a download:
 
