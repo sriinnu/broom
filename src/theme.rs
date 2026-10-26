@@ -248,7 +248,7 @@ static THEMES: [Theme; 5] = [
         radius: 0.3,
         row_height: 28.0,
     },
-    // Soft, rounded, petal-coloured.
+    // Soft, rounded, blossom-coloured.
     Theme {
         name: ThemeName::Bloom,
         dark: tokens(

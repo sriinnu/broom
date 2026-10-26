@@ -31,15 +31,7 @@ pub fn state_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("BROOM_STATE_DIR") {
         return Some(PathBuf::from(dir));
     }
-    let support = PathBuf::from(std::env::var_os("HOME")?).join("Library/Application Support");
-    let dir = support.join("Broom");
-    // Carry over what Petal, the app's old name, had saved: settings, keys'
-    // hints, the first-run marker. One rename, the first time, never again.
-    let old = support.join("Petal");
-    if !dir.exists() && old.is_dir() {
-        let _ = std::fs::rename(&old, &dir);
-    }
-    Some(dir)
+    Some(PathBuf::from(std::env::var_os("HOME")?).join("Library/Application Support/Broom"))
 }
 
 pub fn file_path() -> Option<PathBuf> {
@@ -91,7 +83,20 @@ pub struct Settings {
     /// The last folder actually scanned, so a relaunch lands where you were.
     /// Written by Broom, not shown in Settings.
     pub last_root: Option<String>,
+    /// Column widths in points, as last dragged. Written by Broom, not shown
+    /// in Settings; double-clicking a column edge puts one back.
+    pub rail_width: f32,
+    pub navigator_width: f32,
+    pub cleanup_width: f32,
 }
+
+/// Default column widths, and how far a drag may take each.
+pub const RAIL_WIDTH: f32 = 200.0;
+pub const NAVIGATOR_WIDTH: f32 = 300.0;
+pub const CLEANUP_WIDTH: f32 = 300.0;
+pub const RAIL_RANGE: (f32, f32) = (150.0, 360.0);
+pub const NAVIGATOR_RANGE: (f32, f32) = (220.0, 680.0);
+pub const CLEANUP_RANGE: (f32, f32) = (240.0, 560.0);
 
 impl Default for Settings {
     fn default() -> Self {
@@ -107,6 +112,9 @@ impl Default for Settings {
             appearance: Appearance::Auto,
             default_root: DEFAULT_ROOT.to_string(),
             last_root: None,
+            rail_width: RAIL_WIDTH,
+            navigator_width: NAVIGATOR_WIDTH,
+            cleanup_width: CLEANUP_WIDTH,
         }
     }
 }
@@ -124,6 +132,10 @@ impl Settings {
         self.banner_seconds = self.banner_seconds.clamp(2, 120);
         // Keep the list short — this is a list of folders, not a corpus.
         self.excludes.truncate(64);
+        let fit = |w: f32, default: f32, (lo, hi): (f32, f32)| if w.is_finite() { w.clamp(lo, hi) } else { default };
+        self.rail_width = fit(self.rail_width, RAIL_WIDTH, RAIL_RANGE);
+        self.navigator_width = fit(self.navigator_width, NAVIGATOR_WIDTH, NAVIGATOR_RANGE);
+        self.cleanup_width = fit(self.cleanup_width, CLEANUP_WIDTH, CLEANUP_RANGE);
         self.excludes.retain(|line| !line.trim().is_empty());
         if self.default_root.trim().is_empty() {
             self.default_root = DEFAULT_ROOT.to_string();

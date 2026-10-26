@@ -1,6 +1,6 @@
-//! Trains and checks Petal's path classifier (what kind of thing a file or folder is,
+//! Trains and checks Broom's path classifier (what kind of thing a file or folder is,
 //! from its path alone). The feature and model code is the app's own, in `src/classify`,
-//! so what's trained here is exactly what Petal runs.
+//! so what's trained here is exactly what Broom runs.
 //!
 //!     cargo run --release -- eval               # train, then report accuracy
 //!     cargo run --release -- train              # train and write src/classify/model.bin

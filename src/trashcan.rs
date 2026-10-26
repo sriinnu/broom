@@ -46,6 +46,61 @@ pub fn send(paths: &[PathBuf]) -> Result<(), String> {
     }
 }
 
+/// `send`, and where each path landed in the home Trash, so it can be put
+/// back. Neither Finder nor NSFileManager (through the `trash` crate) says,
+/// so this lists `~/.Trash` before and after and matches the new entries by
+/// name: the same name, or Finder's "name 18.33.12" (before any extension)
+/// when the Trash already held one. Paths on other volumes go to that
+/// volume's own Trash and simply get no entry.
+pub fn send_tracked(paths: &[PathBuf]) -> (Result<(), String>, Vec<(PathBuf, PathBuf)>) {
+    let Some(trash) = std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".Trash")) else {
+        return (send(paths), Vec::new());
+    };
+    let list = || -> std::collections::HashSet<std::ffi::OsString> {
+        std::fs::read_dir(&trash).map(|dir| dir.filter_map(|e| e.ok().map(|e| e.file_name())).collect()).unwrap_or_default()
+    };
+    let before = list();
+    let result = send(paths);
+    let mut new: Vec<String> = list().difference(&before).filter_map(|n| n.to_str().map(str::to_owned)).collect();
+    let mut landed = Vec::new();
+    for path in paths {
+        if path.symlink_metadata().is_ok() {
+            continue; // still where it was: it never went
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+        let (stem, ext) = match path.extension().and_then(|e| e.to_str()) {
+            Some(ext) => (&name[..name.len() - ext.len() - 1], Some(ext)),
+            None => (name, None),
+        };
+        let renamed = |n: &str| {
+            let rest = match ext {
+                Some(ext) => n.strip_suffix(ext).and_then(|n| n.strip_suffix('.')),
+                None => Some(n),
+            };
+            rest.and_then(|r| r.strip_prefix(stem)).is_some_and(|r| r.starts_with(' '))
+        };
+        let found = new.iter().position(|n| n == name).or_else(|| new.iter().position(|n| renamed(n)));
+        if let Some(i) = found {
+            landed.push((path.clone(), trash.join(new.swap_remove(i))));
+        }
+    }
+    (result, landed)
+}
+
+/// Move what `send_tracked` trashed back where it came from. Skips anything
+/// whose old place is taken or whose folder is gone; returns what moved.
+pub fn put_back(landed: &[(PathBuf, PathBuf)]) -> Vec<PathBuf> {
+    landed
+        .iter()
+        .filter(|(original, in_trash)| {
+            original.symlink_metadata().is_err()
+                && original.parent().is_some_and(Path::is_dir)
+                && std::fs::rename(in_trash, original).is_ok()
+        })
+        .map(|(original, _)| original.clone())
+        .collect()
+}
+
 const INK: u32 = 0x1d1a17;
 const CREAM: u32 = 0xf3ead8;
 const CAN: u32 = 0x5a6b7a;

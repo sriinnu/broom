@@ -6,7 +6,7 @@
 
 use std::time::Instant;
 
-use gpui::{Hsla, PathBuilder, Pixels, Point, SharedString, Window, canvas, div, point, prelude::*, px, rgb};
+use gpui::{Context, Hsla, PathBuilder, Pixels, Point, SharedString, Window, canvas, div, point, prelude::*, px, rgb};
 
 use crate::clock;
 use crate::sunburst::Geometry;
@@ -378,4 +378,71 @@ pub fn investigator(caption: Caption, done: Option<f32>, height: f32) -> impl In
                 .child(div().text_xs().text_ellipsis_start().overflow_hidden().whitespace_nowrap().opacity(0.75).child(place))
                 .when(!aside.is_empty(), |d| d.child(div().text_xs().opacity(0.75).child(aside))),
         )
+}
+
+/// Tintin's narration yellow, for the caption box.
+const CAPTION: u32 = 0xf7e7a3;
+
+/// A full path in a ligne-claire caption box ("Meanwhile, in…"), with a little
+/// balloon tail pointing up at the pointer. The tooltip for any path that's cut
+/// short where it sits.
+pub struct PathCaption(pub SharedString);
+
+impl Render for PathCaption {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        // Paths have no spaces to wrap at; a zero-width space after each `/`
+        // lets a long one break on folder boundaries instead of overflowing.
+        let wrapped = self.0.replace('/', "/\u{200B}");
+        div()
+            .relative()
+            .pt(px(9.))
+            .child(
+                div()
+                    .max_w(px(460.))
+                    .px_2p5()
+                    .py_1p5()
+                    .rounded(px(3.))
+                    .bg(rgb(CAPTION))
+                    .border_2()
+                    .border_color(rgb(INK))
+                    .shadow_md()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .text_color(rgb(INK))
+                    .child(div().text_size(px(9.)).font_weight(gpui::FontWeight::BOLD).child("MEANWHILE, IN…"))
+                    .child(div().text_xs().font_family(crate::theme::current().mono).child(wrapped)),
+            )
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    |bounds, _, window, _| {
+                        let at = |x: f32, y: f32| point(bounds.origin.x + px(x), bounds.origin.y + px(y));
+                        // Ink first, then the yellow a contour inside it, running
+                        // down over the box's top border so the tail opens into it.
+                        let mut ink = PathBuilder::fill();
+                        ink.move_to(at(0.0, 11.0));
+                        ink.line_to(at(5.0, 0.0));
+                        ink.line_to(at(16.0, 11.0));
+                        ink.close();
+                        if let Ok(path) = ink.build() {
+                            window.paint_path(path, to_hsla(INK));
+                        }
+                        let mut fill = PathBuilder::fill();
+                        fill.move_to(at(2.6, 12.5));
+                        fill.line_to(at(5.6, 4.2));
+                        fill.line_to(at(12.6, 12.5));
+                        fill.close();
+                        if let Ok(path) = fill.build() {
+                            window.paint_path(path, to_hsla(CAPTION));
+                        }
+                    },
+                )
+                .absolute()
+                .top_0()
+                .left(px(14.))
+                .w(px(16.))
+                .h(px(13.)),
+            )
+    }
 }
