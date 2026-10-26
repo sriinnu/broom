@@ -26,8 +26,8 @@ required again.
 2. On `main`, create a signed, annotated tag and push it:
 
        git switch main && git pull
-       git tag -s v0.2.0 -m "Broom 0.2.0"
-       git push origin v0.2.0
+       git tag -s vX.Y.Z -m "Broom X.Y.Z"
+       git push origin vX.Y.Z
 
    Tags sign by default here (`tag.gpgSign true`) with the same SSH key as
    commits, so the Titan key needs a touch.
@@ -43,7 +43,7 @@ required again.
 Verify a download:
 
     shasum -a 256 -c SHA256SUMS
-    gh attestation verify Broom-0.2.0.dmg -R sriinnu/broom   # when attested
+    gh attestation verify Broom-X.Y.Z.dmg -R sriinnu/broom   # when attested
 
 ## Supply chain
 

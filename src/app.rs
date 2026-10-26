@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use gpui::{
     AnyElement, App, AsyncApp, Bounds, ClipboardItem, Context, CursorStyle, DispatchPhase, Entity, FocusHandle, Focusable,
@@ -42,6 +42,8 @@ use crate::motion;
 use crate::scan::{self, CloudRoot, Kind, Progress, Tree, Volume, format_count, format_size};
 use crate::secrets;
 use crate::settings::{self, Settings};
+use crate::duplicates;
+use crate::history;
 use crate::theme::{self, colors};
 use crate::trashcan;
 use crate::sunburst::{self, Geometry, Hit, Segment, Target};
@@ -49,19 +51,56 @@ use crate::sunburst::{self, Geometry, Hit, Segment, Target};
 actions!(broom, [
     GoUp, OpenFolder, Rescan, StartOver, FocusQuery, SubmitQuery, DismissQuery,
     OpenSettings, CloseSettings, About, CloseAbout,
-    SelectNext, SelectPrev, OpenSelected, ToggleStaged, CloseReview
+    SelectNext, SelectPrev, OpenSelected, ToggleStaged, CloseReview, CopyPath, CopyRelativePath,
+    SortBySize, SortByName, SortByModified
 ]);
 
 
-const RAIL_WIDTH: f32 = 200.0;
-const NAV_WIDTH: f32 = 300.0;
-const CLEANUP_WIDTH: f32 = 300.0;
+/// Where the source, releases and issues live.
+const REPO_URL: &str = "https://github.com/sriinnu/broom";
+
+/// The chart keeps at least this much when a column is dragged wider.
+const CHART_MIN_WIDTH: f32 = 320.0;
 
 /// How the navigator lists a folder's children.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SortBy {
     Size,
     Name,
+    Modified,
+}
+
+impl SortBy {
+    /// Which way a fresh click on this key lists: largest, A–Z, newest first.
+    fn default_descending(self) -> bool {
+        self != SortBy::Name
+    }
+}
+
+/// A column whose width the user can drag.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pane {
+    Rail,
+    Navigator,
+    Cleanup,
+}
+
+impl Pane {
+    fn default_width(self) -> f32 {
+        match self {
+            Pane::Rail => settings::RAIL_WIDTH,
+            Pane::Navigator => settings::NAVIGATOR_WIDTH,
+            Pane::Cleanup => settings::CLEANUP_WIDTH,
+        }
+    }
+
+    fn range(self) -> (f32, f32) {
+        match self {
+            Pane::Rail => settings::RAIL_RANGE,
+            Pane::Navigator => settings::NAVIGATOR_RANGE,
+            Pane::Cleanup => settings::CLEANUP_RANGE,
+        }
+    }
 }
 
 /// What a row's checkbox shows about staging.
@@ -267,6 +306,7 @@ struct LiveView {
 }
 
 static NEXT_LAYOUT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+static NEXT_SCAN_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// How long a folder glows after its total becomes final.
 const SETTLE_GLOW: Duration = Duration::from_millis(700);
@@ -389,6 +429,22 @@ struct Results {
     /// The focused folder's children in list order (`sort`); the chart keeps size order.
     order: Vec<usize>,
     sort: SortBy,
+    descending: bool,
+    /// Modification times, read on demand when the list sorts by them; `None`
+    /// where there's nothing to stat (the APFS remainder) or the stat failed.
+    mtimes: HashMap<usize, Option<SystemTime>>,
+    /// Rows the Modified sort still needs times for; Broom stats them in the
+    /// background and re-sorts when they land.
+    mtimes_wanted: Vec<usize>,
+    mtimes_loading: bool,
+    /// Compared with an earlier scan of the same root: when it was, and how
+    /// much each folder grew since (see `history`). Filled in just after the
+    /// scan finishes.
+    growth_since: Option<SystemTime>,
+    growth: HashMap<usize, i64>,
+    /// Tells this scan's results from the next one's, so late background work
+    /// can't land on a tree it wasn't asked about.
+    scan_id: u64,
     /// The keyboard's row in the navigator.
     selected: Option<usize>,
     elapsed: Duration,
@@ -406,6 +462,9 @@ struct Results {
     banner: Option<Instant>,
     banner_text: Option<String>,
     banner_version: u64,
+    /// What the last move to the Trash sent where (original, now), for the
+    /// banner's "Put back". Cleared with the banner.
+    last_trashed: Vec<(PathBuf, PathBuf)>,
     color_by: ColorBy,
     /// What each node is, for colouring by kind. Filled in as nodes appear in the chart;
     /// node indices stay valid for the life of the tree, so nothing is classified twice.
@@ -447,7 +506,7 @@ impl Results {
         recompute
     }
 
-    fn new(tree: Tree, findings: Vec<Finding>, elapsed: Duration, requested_root: PathBuf, color_by: ColorBy, sort: SortBy) -> Self {
+    fn new(tree: Tree, findings: Vec<Finding>, elapsed: Duration, requested_root: PathBuf, color_by: ColorBy, sort: SortBy, descending: bool) -> Self {
         let mut results = Self {
             tree: Arc::new(tree),
             focus: Tree::ROOT,
@@ -461,6 +520,13 @@ impl Results {
             list_scroll: UniformListScrollHandle::new(),
             order: Vec::new(),
             sort,
+            descending,
+            mtimes: HashMap::new(),
+            mtimes_wanted: Vec::new(),
+            mtimes_loading: false,
+            growth_since: None,
+            growth: HashMap::new(),
+            scan_id: NEXT_SCAN_ID.fetch_add(1, Ordering::Relaxed),
             selected: None,
             elapsed,
             requested_root,
@@ -470,6 +536,7 @@ impl Results {
             banner: None,
             banner_text: None,
             banner_version: 0,
+            last_trashed: Vec::new(),
             color_by,
             categories: HashMap::new(),
             legend_hover: None,
@@ -505,20 +572,41 @@ impl Results {
         self.reorder();
     }
 
-    /// The list order for the focused folder: the tree's (largest first) or by name.
+    /// The list order for the focused folder: by size, name or modification
+    /// time, either way round. The APFS remainder slices stay last regardless.
     fn reorder(&mut self) {
         let mut order = self.tree.nodes[self.focus].children.clone();
-        if self.sort == SortBy::Name {
-            let tree = &self.tree;
-            order.sort_by(|&a, &b| {
-                // Folders first, then case-insensitive by name; the APFS remainder slices last.
-                let key = |ix: usize| {
-                    let n = &tree.nodes[ix];
-                    (n.kind == Kind::Other, n.kind != Kind::Dir, n.name.to_lowercase())
-                };
-                key(a).cmp(&key(b))
-            });
+        let tree = &self.tree;
+        let desc = self.descending;
+        match self.sort {
+            // The tree keeps children largest first already.
+            SortBy::Size => {
+                if !desc {
+                    order.reverse();
+                }
+            }
+            SortBy::Name => order.sort_by(|&a, &b| {
+                // Folders first either way, then case-insensitive by name.
+                let (na, nb) = (&tree.nodes[a], &tree.nodes[b]);
+                let by_name = na.name.to_lowercase().cmp(&nb.name.to_lowercase());
+                (na.kind != Kind::Dir).cmp(&(nb.kind != Kind::Dir)).then(if desc { by_name.reverse() } else { by_name })
+            }),
+            SortBy::Modified => {
+                // Times not read yet are asked for (see `Broom::fetch_mtimes`)
+                // and sit at the bottom until they arrive.
+                self.mtimes_wanted = order.iter().copied().filter(|ix| !self.mtimes.contains_key(ix)).collect();
+                let mtimes = &self.mtimes;
+                let time = |ix: usize| mtimes.get(&ix).copied().flatten();
+                // Unknown times sink to the bottom either way.
+                order.sort_by(|&a, &b| match (time(a), time(b)) {
+                    (Some(x), Some(y)) => if desc { y.cmp(&x) } else { x.cmp(&y) },
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                });
+            }
         }
+        order.sort_by_key(|&ix| tree.nodes[ix].kind == Kind::Other);
         self.order = order;
         if let Some(sel) = self.selected {
             if !self.order.contains(&sel) {
@@ -527,8 +615,9 @@ impl Results {
         }
     }
 
-    fn set_sort(&mut self, sort: SortBy) {
+    fn set_sort(&mut self, sort: SortBy, descending: bool) {
         self.sort = sort;
+        self.descending = descending;
         self.reorder();
     }
 
@@ -723,6 +812,44 @@ fn home_folders(tree: &Tree) -> Vec<usize> {
 }
 
 /// Shows paths in the home folder as `~/…`, as the shell does.
+/// Column widths (rail, navigator, cleanup) squeezed so they and the chart's
+/// minimum fit `room`: the widest gives first, none below its floor.
+fn fit_columns(mut widths: [f32; 3], room: f32) -> [f32; 3] {
+    const PANES: [Pane; 3] = [Pane::Rail, Pane::Navigator, Pane::Cleanup];
+    let mut over = widths.iter().sum::<f32>() + CHART_MIN_WIDTH - room;
+    while over > 0.5 {
+        let slack = |w: &[f32; 3], i: usize| w[i] - PANES[i].range().0;
+        let Some(i) = (0..3).filter(|&i| slack(&widths, i) > 0.5).max_by(|&a, &b| widths[a].total_cmp(&widths[b])) else { break };
+        // Down to the next-widest that can still give, then they share.
+        let next = (0..3).filter(|&j| j != i && slack(&widths, j) > 0.5).map(|j| widths[j]).fold(f32::MIN, f32::max);
+        let step = if next > f32::MIN { (widths[i] - next).max(1.0) } else { f32::MAX };
+        let cut = over.min(slack(&widths, i)).min(step);
+        widths[i] -= cut;
+        over -= cut;
+    }
+    widths
+}
+
+/// A change in size worth showing ("+1.2 GB", "−340 MB"); under a megabyte
+/// either way it's noise, and `None`.
+fn format_delta(bytes: i64) -> Option<String> {
+    (bytes.unsigned_abs() >= 1 << 20).then(|| format!("{}{}", if bytes > 0 { "+" } else { "−" }, format_size(bytes.unsigned_abs())))
+}
+
+/// How long ago, in one short token: "5m", "3h", "2d", "6w", "4mo", "2y".
+fn format_age(when: SystemTime) -> String {
+    let secs = SystemTime::now().duration_since(when).map(|d| d.as_secs()).unwrap_or(0);
+    match secs {
+        0..60 => "now".to_string(),
+        60..3_600 => format!("{}m", secs / 60),
+        3_600..86_400 => format!("{}h", secs / 3_600),
+        86_400..1_209_600 => format!("{}d", secs / 86_400),
+        1_209_600..5_259_600 => format!("{}w", secs / 604_800),
+        5_259_600..31_557_600 => format!("{}mo", secs / 2_629_800),
+        _ => format!("{}y", secs / 31_557_600),
+    }
+}
+
 pub(crate) fn abbreviate_home(path: &str) -> String {
     let Ok(home) = std::env::var("HOME") else { return path.to_string() };
     match path.strip_prefix(home.as_str()) {
@@ -1035,6 +1162,15 @@ pub struct Broom {
     clouds: Vec<CloudRoot>,
     /// Navigator order, kept across scans.
     sort: SortBy,
+    sort_descending: bool,
+    /// Column widths: the live values, written back to settings when a drag ends.
+    rail_width: f32,
+    nav_width: f32,
+    cleanup_width: f32,
+    /// A column-edge drag in flight: which column, pointer x and width at press.
+    pane_drag: Rc<Cell<Option<(Pane, f32, f32)>>>,
+    /// The widths actually drawn this frame, by `Pane` order.
+    fitted: [f32; 3],
     /// The review card before a move to the Trash, if open.
     review: Option<ReviewState>,
     focus_handle: FocusHandle,
@@ -1088,6 +1224,12 @@ impl Broom {
             volumes: scan::volumes(),
             clouds: scan::cloud_roots(),
             sort: SortBy::Size,
+            sort_descending: true,
+            rail_width: settings.rail_width,
+            nav_width: settings.navigator_width,
+            cleanup_width: settings.cleanup_width,
+            pane_drag: Rc::default(),
+            fitted: [settings.rail_width, settings.navigator_width, settings.cleanup_width],
             review: None,
             focus_handle,
             error: None,
@@ -1180,6 +1322,54 @@ impl Broom {
         }
     }
 
+    /// The banner's "Put back": move the last batch out of the Trash, then
+    /// re-read just the folders they went back into.
+    fn put_back(&mut self, cx: &mut Context<Self>) {
+        let Some(r) = self.results() else { return };
+        let landed = std::mem::take(&mut r.last_trashed);
+        if landed.is_empty() {
+            return;
+        }
+        r.banner = None;
+        let scan_id = r.scan_id;
+        let (excludes, outline_depth) = (self.settings.exclude_paths(), self.settings.outline_depth);
+        cx.spawn(async move |this, cx| {
+            let (restored, folders) = cx
+                .background_spawn(async move {
+                    let restored = trashcan::put_back(&landed);
+                    let mut parents: Vec<PathBuf> = restored.iter().filter_map(|p| p.parent().map(PathBuf::from)).collect();
+                    parents.sort();
+                    parents.dedup();
+                    // A parent inside another parent is covered by the outer scan.
+                    let outer: Vec<PathBuf> = parents.iter().filter(|p| !parents.iter().any(|q| q != *p && p.starts_with(q))).cloned().collect();
+                    let folders: Vec<(PathBuf, Tree)> =
+                        outer.into_iter().map(|p| { let t = scan::scan(&p, &scan::Progress::default(), &excludes, outline_depth); (p, t) }).collect();
+                    (restored, folders)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                let mut recompute = false;
+                if let Some(r) = this.results().filter(|r| r.scan_id == scan_id) {
+                    for (folder, fresh) in &folders {
+                        if let Some(ix) = r.tree.find(folder) {
+                            Arc::make_mut(&mut r.tree).graft(ix, fresh);
+                        }
+                    }
+                    r.mtimes.clear();
+                    recompute = r.tree_changed();
+                }
+                if recompute {
+                    this.collector_changed(cx);
+                }
+                let what = if restored.len() == 1 { "1 item".to_string() } else { format!("{} items", restored.len()) };
+                this.show_banner(Some(format!("Put {what} back where it was.")), cx);
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     /// After `trash::delete_all` succeeded for these nodes (of the current tree):
     /// take them out of the tree and every list that pointed at them.
     pub fn remove_trashed(&mut self, items: &[usize], cx: &mut Context<Self>) {
@@ -1197,6 +1387,8 @@ impl Broom {
                 }
                 Arc::make_mut(&mut r.tree).remove(ix);
             }
+            // The folders they left have new modification times.
+            r.mtimes.clear();
             findings::prune_after_removal(&mut r.findings, &r.tree);
             recompute = r.tree_changed();
         }
@@ -1272,6 +1464,8 @@ impl Broom {
                                     r.focus = ix;
                                 }
                                 Arc::make_mut(&mut r.tree).graft(ix, &fresh);
+                                // The Trash changed under us; its times did too.
+                                r.mtimes.clear();
                                 findings::prune_after_removal(&mut r.findings, &r.tree);
                                 findings::refresh_location(&mut r.findings, &r.tree, &bases, "Trash");
                                 recompute = r.tree_changed();
@@ -1431,15 +1625,18 @@ impl Broom {
                             _ => Vec::new(),
                         };
                         let root_str = root_for_results.to_string_lossy().into_owned();
-                        let mut results = Results::new(tree, findings, clock::since(started), root_for_results, this.color_by, this.sort);
+                        let mut results = Results::new(tree, findings, clock::since(started), root_for_results, this.color_by, this.sort, this.sort_descending);
                         let ix = resolve_path(&results.tree, &focus);
                         if ix != Tree::ROOT {
                             results.navigate(ix);
                         }
                         // The chart is already on screen from the scan; don't replay the sweep.
                         results.anim_start = clock::now() - ZOOM_DURATION;
+                        let (tree, scan_id) = (results.tree.clone(), results.scan_id);
                         this.screen = Screen::Results(results);
                         this.resolve_pending_findings(cx);
+                        this.compare_with_history(tree.clone(), scan_id, cx);
+                        this.find_duplicates(tree, scan_id, cx);
                         // Remember what was scanned so a relaunch picks up here.
                         this.settings.last_root = Some(root_str);
                         let _ = settings::save(&this.settings);
@@ -1524,6 +1721,7 @@ impl Broom {
                     if r.banner_version == version {
                         r.banner = None;
                         r.banner_text = None;
+                        r.last_trashed.clear();
                         cx.notify();
                     }
                 }
@@ -2317,7 +2515,7 @@ impl Broom {
             review.drop = Some(drop.clone());
         }
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move { trashcan::send(&paths) }).await;
+            let (result, landed) = cx.background_spawn(async move { trashcan::send_tracked(&paths) }).await;
             if result.is_ok() {
                 // Let the last item land and the lid close before the card goes.
                 drop.settle();
@@ -2330,9 +2528,12 @@ impl Broom {
                         this.remove_trashed(&items, cx);
                         let what = if items.len() == 1 { "1 item".to_string() } else { format!("{} items", items.len()) };
                         this.show_banner(
-                            Some(format!("Moved {what} ({}) to the Trash. Empty the Trash to get the space back.", format_size(freed))),
+                            Some(format!("Moved {what} ({}) to the Trash\nEmpty the Trash to get the space back", format_size(freed))),
                             cx,
                         );
+                        if let Some(r) = this.results() {
+                            r.last_trashed = landed;
+                        }
                     }
                     Err(error) => {
                         // Not atomic: whatever did go should leave the tree too.
@@ -2408,6 +2609,274 @@ impl Broom {
         cx.notify();
     }
 
+    /// ⌘C in the navigator: the selected row's full path, or the open folder's.
+    fn copy_path(&mut self, _: &CopyPath, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(path) = self.path_to_copy() {
+            cx.write_to_clipboard(ClipboardItem::new_string(path));
+        }
+    }
+
+    /// ⇧⌘C: the same, with the home folder as `~`.
+    fn copy_relative_path(&mut self, _: &CopyRelativePath, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(path) = self.path_to_copy() {
+            cx.write_to_clipboard(ClipboardItem::new_string(abbreviate_home(&path)));
+        }
+    }
+
+    fn path_to_copy(&mut self) -> Option<String> {
+        if self.modal.is_some() || self.review.is_some() {
+            return None;
+        }
+        let r = self.results()?;
+        let ix = r.selected.filter(|&ix| r.tree.nodes[ix].kind != Kind::Other).unwrap_or(r.focus);
+        Some(r.tree.path_of(ix).to_string_lossy().into_owned())
+    }
+
+    /// Sort the list by `value`; asking for the current one again flips it.
+    fn choose_sort(&mut self, value: SortBy, cx: &mut Context<Self>) {
+        self.sort_descending = if self.sort == value { !self.sort_descending } else { value.default_descending() };
+        self.sort = value;
+        let descending = self.sort_descending;
+        if let Some(r) = self.results() {
+            r.set_sort(value, descending);
+        }
+        cx.notify();
+    }
+
+    /// What a column is drawn at: its saved width, unless the window is too
+    /// narrow for every saved width and the chart's minimum (see `fit_widths`).
+    fn pane_width(&self, pane: Pane) -> f32 {
+        self.fitted[pane as usize]
+    }
+
+    /// Squeeze the columns to fit the window, widest first and never below
+    /// their minimum, leaving the saved widths alone so a wider window gets
+    /// them back.
+    fn fit_widths(&mut self, window: &Window) {
+        let room: f32 = window.viewport_size().width.into();
+        self.fitted = fit_columns([self.rail_width, self.nav_width, self.cleanup_width], room);
+    }
+
+    /// Look for duplicate files in the background, on the survey pool so it
+    /// queues behind the clone surveys instead of starving searches; the
+    /// finding joins the list when it's done.
+    fn find_duplicates(&mut self, tree: Arc<Tree>, scan_id: u64, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let found = cx.background_spawn(async move { survey_pool().install(|| duplicates::find(&tree)) }).await;
+            let Some(finding) = found else { return };
+            let _ = this.update(cx, |this, cx| {
+                if let Some(r) = this.results().filter(|r| r.scan_id == scan_id) {
+                    // Only what's still in the tree: a move to the Trash may have
+                    // landed while the files were being read.
+                    let mut finding = finding;
+                    finding.nodes.retain(|&ix| r.tree.nodes[ix].parent.is_some());
+                    if !finding.nodes.is_empty() {
+                        r.findings.push(finding);
+                        r.findings.sort_by(|a, b| b.size.cmp(&a.size));
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Record this scan and compare it with an earlier one of the same root,
+    /// off the main thread; the list's growth column appears when it lands.
+    fn compare_with_history(&mut self, tree: Arc<Tree>, scan_id: u64, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let growth = cx.background_spawn(async move { history::compare_and_record(&tree) }).await;
+            let Some(growth) = growth else { return };
+            let _ = this.update(cx, |this, cx| {
+                if let Some(r) = this.results().filter(|r| r.scan_id == scan_id) {
+                    r.growth_since = Some(growth.since);
+                    r.growth = growth.by_node;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Stat whatever the Modified sort is waiting on, off the main thread: a
+    /// folder can hold a hundred thousand entries, or sit on a slow disk.
+    fn fetch_mtimes(&mut self, cx: &mut Context<Self>) {
+        let Screen::Results(r) = &mut self.screen else { return };
+        if r.mtimes_loading || r.mtimes_wanted.is_empty() {
+            return;
+        }
+        let wanted = std::mem::take(&mut r.mtimes_wanted);
+        let mut dirs: HashMap<usize, PathBuf> = HashMap::new();
+        let jobs: Vec<(usize, Option<PathBuf>)> = wanted
+            .into_iter()
+            .map(|ix| {
+                let node = &r.tree.nodes[ix];
+                let path = match (node.kind, node.parent) {
+                    (Kind::Other, _) | (_, None) => None,
+                    (_, Some(parent)) => {
+                        Some(dirs.entry(parent).or_insert_with(|| r.tree.path_of(parent)).join(node.name.as_ref()))
+                    }
+                };
+                (ix, path)
+            })
+            .collect();
+        r.mtimes_loading = true;
+        let scan_id = r.scan_id;
+        cx.spawn(async move |this, cx| {
+            let times: Vec<(usize, Option<SystemTime>)> = cx
+                .background_spawn(async move {
+                    jobs.into_iter()
+                        .map(|(ix, path)| (ix, path.and_then(|p| std::fs::symlink_metadata(p).and_then(|m| m.modified()).ok())))
+                        .collect()
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                let Some(r) = this.results().filter(|r| r.scan_id == scan_id) else { return };
+                r.mtimes_loading = false;
+                r.mtimes.extend(times);
+                if r.sort == SortBy::Modified {
+                    r.reorder();
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn set_pane_width(&mut self, pane: Pane, width: f32) {
+        match pane {
+            Pane::Rail => self.rail_width = width,
+            Pane::Navigator => self.nav_width = width,
+            Pane::Cleanup => self.cleanup_width = width,
+        }
+    }
+
+    /// Written once a drag ends, not on every frame of it.
+    fn save_pane_widths(&mut self) {
+        self.settings.rail_width = self.rail_width;
+        self.settings.navigator_width = self.nav_width;
+        self.settings.cleanup_width = self.cleanup_width;
+        let _ = settings::save(&self.settings);
+    }
+
+    /// The grab strip on a column's inner edge: drag to resize, double-click
+    /// for the default width. Deferred so its hitbox sits above both
+    /// neighbours, and driven by raw mouse events like the panel scrollbar so a
+    /// drag that outruns the strip keeps going.
+    fn pane_handle(&self, pane: Pane, cx: &mut Context<Self>) -> impl IntoElement {
+        let drag = self.pane_drag.clone();
+        let view = cx.entity().downgrade();
+        let width = self.pane_width(pane);
+        let others = self.fitted.iter().sum::<f32>() - width;
+        // The cleanup column's edge is on its left, so dragging left widens it.
+        let sign = if pane == Pane::Cleanup { -1.0 } else { 1.0 };
+        let (lo, hi) = pane.range();
+        let strip = canvas(
+            |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::BlockMouse),
+            move |bounds, hitbox, window, _| {
+                let held = drag.get().is_some_and(|(p, ..)| p == pane);
+                let hovered = hitbox.is_hovered(window);
+                if held || hovered {
+                    let accent = to_hsla(colors().accent);
+                    let line = gpui::hsla(
+                        accent.hue.into_positive_degrees() / 360.0,
+                        accent.saturation,
+                        accent.lightness,
+                        if held { 0.9 } else { 0.55 },
+                    );
+                    let mid: f32 = (bounds.origin.x + bounds.size.width / 2.0).into();
+                    window.paint_quad(quad(
+                        Bounds::from_corners(
+                            point(px(mid - 1.), bounds.origin.y),
+                            point(px(mid + 1.), bounds.origin.y + bounds.size.height),
+                        ),
+                        px(0.),
+                        line,
+                        px(0.),
+                        gpui::hsla(0., 0., 0., 0.),
+                        BorderStyle::default(),
+                    ));
+                }
+                if held {
+                    window.set_window_cursor_style(CursorStyle::ResizeLeftRight);
+                } else {
+                    window.set_cursor_style(CursorStyle::ResizeLeftRight, &hitbox);
+                }
+
+                let (drag_d, view_d) = (drag.clone(), view.clone());
+                window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+                    if phase != DispatchPhase::Bubble || event.button != MouseButton::Left || !hitbox.is_hovered(window) {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    if event.click_count == 2 {
+                        drag_d.set(None);
+                        let _ = view_d.update(cx, |this, cx| {
+                            this.set_pane_width(pane, pane.default_width());
+                            this.save_pane_widths();
+                            cx.notify();
+                        });
+                    } else {
+                        drag_d.set(Some((pane, event.position.x.into(), width)));
+                        // The root's close-on-outside-click never sees this press.
+                        let _ = view_d.update(cx, |this, cx| {
+                            if this.context_menu.take().is_some() {
+                                cx.notify();
+                            }
+                        });
+                        window.refresh();
+                    }
+                });
+                let (drag_m, view_m) = (drag.clone(), view.clone());
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                    if phase != DispatchPhase::Bubble {
+                        return;
+                    }
+                    let Some((p, x0, w0)) = drag_m.get() else { return };
+                    if p != pane {
+                        return;
+                    }
+                    // Released outside the window: the up never came.
+                    if event.pressed_button != Some(MouseButton::Left) {
+                        drag_m.set(None);
+                        let _ = view_m.update(cx, |this, cx| {
+                            this.save_pane_widths();
+                            cx.notify();
+                        });
+                        return;
+                    }
+                    let room: f32 = window.viewport_size().width.into();
+                    let max = hi.min(room - others - CHART_MIN_WIDTH).max(lo);
+                    let x: f32 = event.position.x.into();
+                    let to = (w0 + sign * (x - x0)).clamp(lo, max);
+                    let _ = view_m.update(cx, |this, cx| {
+                        this.set_pane_width(pane, to);
+                        cx.notify();
+                    });
+                });
+                let (drag_u, view_u) = (drag.clone(), view.clone());
+                window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Bubble && drag_u.get().is_some_and(|(p, ..)| p == pane) {
+                        drag_u.set(None);
+                        let _ = view_u.update(cx, |this, cx| {
+                            this.save_pane_widths();
+                            cx.notify();
+                        });
+                    }
+                });
+            },
+        )
+        .size_full();
+        div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .w(px(7.))
+            .when(pane == Pane::Cleanup, |d| d.left(px(-4.)))
+            .when(pane != Pane::Cleanup, |d| d.right(px(-4.)))
+            .child(deferred(strip))
+    }
+
     /// A checkbox on a row was clicked.
     fn click_tick(&mut self, ix: usize, cx: &mut Context<Self>) {
         if let Some(r) = self.results() {
@@ -2439,6 +2908,8 @@ impl Broom {
 
 impl Render for Broom {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.fit_widths(window);
+        self.fetch_mtimes(cx);
         // The middle two columns (navigator + chart) depend on the screen; the
         // rail on the left and the cleanup column on the right are always there.
         let content = match &self.screen {
@@ -2486,6 +2957,11 @@ impl Render for Broom {
             .on_action(cx.listener(Self::open_selected))
             .on_action(cx.listener(Self::toggle_selected))
             .on_action(cx.listener(Self::close_review))
+            .on_action(cx.listener(Self::copy_path))
+            .on_action(cx.listener(Self::copy_relative_path))
+            .on_action(cx.listener(|this, _: &SortBySize, _, cx| this.choose_sort(SortBy::Size, cx)))
+            .on_action(cx.listener(|this, _: &SortByName, _, cx| this.choose_sort(SortBy::Name, cx)))
+            .on_action(cx.listener(|this, _: &SortByModified, _, cx| this.choose_sort(SortBy::Modified, cx)))
             .size_full()
             .flex()
             .flex_col()
@@ -3109,7 +3585,10 @@ impl Broom {
                                     .border_1()
                                     .border_color(rgb(colors().border))
                                     .bg(rgb(colors().bg))
-                                    .text_size(px(12.)),
+                                    .text_size(px(12.))
+                                    // One line as tall as the field inside its border: the element draws
+                                    // from the top, so this, not flex, is what centres the text.
+                                    .line_height(px(26.)),
                             ),
                     )
                     .child(
@@ -3183,7 +3662,10 @@ impl Broom {
                                     .border_1()
                                     .border_color(rgb(colors().border))
                                     .bg(rgb(colors().bg))
-                                    .text_size(px(12.)),
+                                    .text_size(px(12.))
+                                    // One line as tall as the field inside its border: the element draws
+                                    // from the top, so this, not flex, is what centres the text.
+                                    .line_height(px(26.)),
                             ),
                     )
                     .child(
@@ -3298,7 +3780,7 @@ impl Broom {
         line
     }
 
-    fn render_about(&self, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_about(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
@@ -3317,7 +3799,22 @@ impl Broom {
                     .text_color(rgb(colors().muted))
                     .child("Ask in plain language — the reader judges the words, code matches the files, you confirm the list."),
             )
-            .child(div().mt_3().text_sm().child("Made by Srinivas Pendela"))
+            .child(
+                div()
+                    .id("about-github")
+                    .mt_2()
+                    .px_2()
+                    .py_0p5()
+                    .rounded(theme::radius(6.))
+                    .text_sm()
+                    .text_color(rgb(colors().accent))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgb(colors().card_hover)).underline())
+                    .on_click(cx.listener(|_, _, _, cx| cx.open_url(REPO_URL)))
+                    .tooltip(|_, cx| cx.new(|_| Tip("Open the project on GitHub".into())).into())
+                    .child("github.com/sriinnu/broom ↗"),
+            )
+            .child(div().mt_2().text_sm().child("Made by Srinivas Pendela"))
             .child(
                 div().text_xs().text_color(rgb(colors().muted)).child("© 2026 Srinivas Pendela · Built with Rust and GPUI"),
             )
@@ -3570,7 +4067,27 @@ impl Broom {
                             .child(r.tree.nodes[ix].name.clone()),
                     );
                 }
-                bar = bar.child(crumbs).child(div().flex_1());
+                let here: SharedString = r.tree.path_of(r.focus).to_string_lossy().into_owned().into();
+                // icon_button's look, but with the full path in a caption box for a tooltip.
+                let copy = div()
+                    .id("copy-here")
+                    .size(px(20.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(theme::radius(6.))
+                    .text_color(rgb(colors().muted))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgb(colors().border)).text_color(rgb(colors().text)))
+                    .child("⎘")
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click({
+                        let here = here.clone();
+                        move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(here.to_string()))
+                    })
+                    .tooltip(move |_, cx| cx.new(|_| comic::PathCaption(format!("{here}  ·  click or ⌘C to copy").into())).into());
+                bar = bar.child(crumbs).child(copy).child(div().flex_1());
                 // The query field. Stop mouse-down here so a click into it doesn't
                 // start a window drag on the toolbar.
                 bar = bar.child(
@@ -3592,7 +4109,10 @@ impl Broom {
                             .border_1()
                             .border_color(rgb(colors().border))
                             .bg(rgb(colors().bg))
-                            .text_size(px(12.)),
+                            .text_size(px(12.))
+                            // One line as tall as the field inside its border: the element draws
+                            // from the top, so this, not flex, is what centres the text.
+                            .line_height(px(26.)),
                     ),
                 );
                 bar = bar
@@ -3704,7 +4224,7 @@ impl Broom {
                 .flex()
                 .flex_col()
                 .child(div().font_weight(FontWeight::MEDIUM).child("Home folder"))
-                .child(div().text_xs().text_color(rgb(colors().muted)).truncate().child(abbreviate_home(&home.to_string_lossy()))),
+                .child(path_tip(div().id("home-path"), abbreviate_home(&home.to_string_lossy())).text_xs().text_color(rgb(colors().muted)).truncate().child(abbreviate_home(&home.to_string_lossy()))),
         );
         if !self.clouds.is_empty() {
             list = list.child(heading("CLOUD"));
@@ -3717,7 +4237,7 @@ impl Broom {
                         .flex()
                         .flex_col()
                         .child(div().font_weight(FontWeight::MEDIUM).truncate().child(cloud.name.clone()))
-                        .child(div().text_xs().text_color(rgb(colors().muted)).truncate().child(abbreviate_home(&cloud.path.to_string_lossy()))),
+                        .child(path_tip(div().id(("cloud-path", i)), abbreviate_home(&cloud.path.to_string_lossy())).text_xs().text_color(rgb(colors().muted)).truncate().child(abbreviate_home(&cloud.path.to_string_lossy()))),
                 );
             }
         }
@@ -3732,7 +4252,8 @@ impl Broom {
         );
 
         div()
-            .w(px(RAIL_WIDTH))
+            .w(px(self.pane_width(Pane::Rail)))
+            .relative()
             .flex_none()
             .h_full()
             .flex()
@@ -3751,12 +4272,15 @@ impl Broom {
                     .text_color(rgb(colors().muted))
                     .child("↑↓ → ← navigate · ␣ stage"),
             )
+            .child(self.pane_handle(Pane::Rail, cx))
     }
 
     /// The navigator column's frame, shared by every screen.
-    fn navigator_frame(&self) -> gpui::Div {
+    fn navigator_frame(&self, cx: &mut Context<Self>) -> gpui::Div {
         div()
-            .w(px(NAV_WIDTH))
+            .w(px(self.pane_width(Pane::Navigator)))
+            .relative()
+            .child(self.pane_handle(Pane::Navigator, cx))
             .flex_none()
             .h_full()
             .flex()
@@ -3770,7 +4294,7 @@ impl Broom {
     /// towards the rail.
     fn render_empty(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let nav = self
-            .navigator_frame()
+            .navigator_frame(cx)
             .child(
                 div()
                     .px_4()
@@ -3808,7 +4332,9 @@ impl Broom {
     /// the cleanup plan.
     fn render_cleanup(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let col = div()
-            .w(px(CLEANUP_WIDTH))
+            .w(px(self.pane_width(Pane::Cleanup)))
+            .relative()
+            .child(self.pane_handle(Pane::Cleanup, cx))
             .flex_none()
             .h_full()
             .flex()
@@ -3924,7 +4450,7 @@ impl Broom {
         }
 
         let sidebar = self
-            .navigator_frame()
+            .navigator_frame(cx)
             .child(
                 div()
                     .px_4()
@@ -4174,8 +4700,25 @@ impl Broom {
     fn render_navigator(&self, r: &Results, cx: &mut Context<Self>) -> impl IntoElement {
         let focus = &r.tree.nodes[r.focus];
         let count = r.order.len();
-        let sort_option = |id: &'static str, label: &'static str, value: SortBy, cx: &mut Context<Self>| {
+        // Click a key to sort by it; click it again to flip the direction.
+        let sort_option = |id: &'static str, value: SortBy, cx: &mut Context<Self>| {
             let selected = r.sort == value;
+            let label = match (value, selected, r.descending) {
+                (SortBy::Size, false, _) => "Size",
+                (SortBy::Size, true, true) => "Size ↓",
+                (SortBy::Size, true, false) => "Size ↑",
+                (SortBy::Name, false, _) => "Name",
+                (SortBy::Name, true, false) => "A–Z",
+                (SortBy::Name, true, true) => "Z–A",
+                (SortBy::Modified, false, _) => "Modified",
+                (SortBy::Modified, true, true) => "Newest",
+                (SortBy::Modified, true, false) => "Oldest",
+            };
+            let tip = match value {
+                SortBy::Size => "Sort by size ⌘1 · again to flip",
+                SortBy::Name => "Sort by name ⌘2 · again to flip",
+                SortBy::Modified => "Sort by date modified ⌘3 · again to flip",
+            };
             div()
                 .id(id)
                 .px_2()
@@ -4184,13 +4727,8 @@ impl Broom {
                 .cursor_pointer()
                 .when(selected, |d| d.bg(rgb(colors().card_hover)).text_color(rgb(colors().text)))
                 .when(!selected, |d| d.text_color(rgb(colors().muted)).hover(|s| s.text_color(rgb(colors().text))))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.sort = value;
-                    if let Some(r) = this.results() {
-                        r.set_sort(value);
-                    }
-                    cx.notify();
-                }))
+                .on_click(cx.listener(move |this, _, _, cx| this.choose_sort(value, cx)))
+                .tooltip(move |_, cx| cx.new(|_| Tip(tip.into())).into())
                 .child(label)
         };
         let sort_toggle = div()
@@ -4203,10 +4741,11 @@ impl Broom {
             .border_1()
             .border_color(rgb(colors().border))
             .text_xs()
-            .child(sort_option("sort-size", "Size", SortBy::Size, cx))
-            .child(sort_option("sort-name", "Name", SortBy::Name, cx));
+            .child(sort_option("sort-size", SortBy::Size, cx))
+            .child(sort_option("sort-name", SortBy::Name, cx))
+            .child(sort_option("sort-modified", SortBy::Modified, cx));
 
-        self.navigator_frame()
+        self.navigator_frame(cx)
             .child(
                 div()
                     .px_4()
@@ -4215,19 +4754,24 @@ impl Broom {
                     .flex()
                     .flex_col()
                     .gap_0p5()
-                    .child(
-                        div()
-                            .flex()
-                            .items_start()
-                            .gap_2()
-                            .child(div().flex_1().min_w_0().text_lg().font_family(theme::current().display).font_weight(FontWeight::SEMIBOLD).truncate().child(focus.name.clone()))
-                            .child(sort_toggle),
-                    )
+                    .child(div().min_w_0().text_lg().font_family(theme::current().display).font_weight(FontWeight::SEMIBOLD).truncate().child(focus.name.clone()))
                     .child(div().text_color(rgb(colors().muted)).child(format!(
                         "{} · {} files",
                         format_size(focus.size),
                         format_count(focus.items)
                     )))
+                    .when_some(r.growth_since.filter(|_| r.growth.contains_key(&r.focus)), |d, since| {
+                        let delta = r.growth[&r.focus];
+                        let when = match format_age(since).as_str() {
+                            "now" => "just now".to_string(),
+                            age => format!("{age} ago"),
+                        };
+                        d.child(div().text_xs().text_color(rgb(colors().muted)).child(format!(
+                            "{} since the scan {when}",
+                            format_delta(delta).unwrap_or_else(|| "About the same".to_string()),
+                        )))
+                    })
+                    .child(div().pt_1().flex().child(sort_toggle))
                     .when(r.tree.cloud_only > 0, |d| {
                         d.child(div().text_xs().text_color(rgb(colors().muted)).child(format!(
                             "{} cloud-only folders not downloaded (use no space here)",
@@ -4498,6 +5042,33 @@ impl Broom {
                             )),
                         )
                     })
+                    .when(r.growth_since.is_some(), |d| {
+                        let delta = r.growth.get(&ix).copied().and_then(|g| format_delta(g).map(|text| (g, text)));
+                        d.child(
+                            div()
+                                .w(px(64.))
+                                .flex_none()
+                                .text_right()
+                                .text_xs()
+                                .font_family(theme::current().mono)
+                                .when_some(delta, |d, (g, text)| {
+                                    d.text_color(rgb(if g > 0 { colors().review } else { colors().safe })).child(text)
+                                }),
+                        )
+                    })
+                    .when(r.sort == SortBy::Modified, |d| {
+                        let modified = r.mtimes.get(&ix).copied().flatten();
+                        d.child(
+                            div()
+                                .w(px(40.))
+                                .flex_none()
+                                .text_right()
+                                .text_color(rgb(colors().muted))
+                                .text_xs()
+                                .font_family(theme::current().mono)
+                                .child(modified.map(format_age).unwrap_or_default()),
+                        )
+                    })
                     .child(
                         div()
                             .w(px(72.))
@@ -4549,7 +5120,7 @@ impl Broom {
                             .flex()
                             .flex_col()
                             .child(div().truncate().font_weight(FontWeight::MEDIUM).child(node.name.clone()))
-                            .child(div().text_xs().text_color(rgb(colors().muted)).truncate().child(parent)),
+                            .child(path_tip(div().id(("plan-path", ix)), parent.clone()).text_xs().text_color(rgb(colors().muted)).truncate().child(parent)),
                     )
                     .child(div().flex_none().text_xs().font_family(theme::current().mono).text_color(rgb(colors().muted)).child(format_size(node.size)))
                     .child(
@@ -4706,7 +5277,7 @@ impl Broom {
                             .flex()
                             .flex_col()
                             .child(div().truncate().font_weight(FontWeight::MEDIUM).child(node.name.clone()))
-                            .child(div().text_xs().text_color(rgb(colors().muted)).font_family(theme::current().mono).truncate().child(path)),
+                            .child(path_tip(div().id(("review-path", ix)), path.clone()).text_xs().text_color(rgb(colors().muted)).font_family(theme::current().mono).truncate().child(path)),
                     )
                     .child(
                         div()
@@ -5124,7 +5695,11 @@ impl Broom {
                     String::new()
                 };
                 let (headline, detail) = match &r.banner_text {
-                    Some(text) => (text.clone(), String::new()),
+                    // A line break splits the bold part from the quiet detail.
+                    Some(text) => match text.split_once('\n') {
+                        Some((head, detail)) => (head.to_string(), detail.to_string()),
+                        None => (text.clone(), String::new()),
+                    },
                     None => (format!("Scan complete in {:.1} s", r.elapsed.as_secs_f32()), format!("{} accounted for{savings}", format_size(total))),
                 };
                 d.child(
@@ -5148,6 +5723,19 @@ impl Broom {
                             .child(div().flex_none().text_color(rgb(colors().safe)).font_weight(FontWeight::BOLD).child("✓"))
                             .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child(headline))
                             .when(!detail.is_empty(), |d| d.child(div().min_w_0().truncate().text_xs().text_color(rgb(colors().muted)).child(detail)))
+                            .when(!r.last_trashed.is_empty(), |d| {
+                                d.child(
+                                    button("put-back", "Put back")
+                                        .flex_none()
+                                        .text_xs()
+                                        .py_0p5()
+                                        .px_2()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            this.put_back(cx);
+                                        })),
+                                )
+                            })
                             .on_click(cx.listener(|this, _, _, cx| {
                                 if let Some(r) = this.results() {
                                     r.banner = None;
@@ -5171,7 +5759,9 @@ fn render_help() -> impl IntoElement {
         ("Is deleting safe?", "Everything goes to the Trash. The review step says how much will really be freed (space shared with files outside the selection isn't), and you can put things back from Finder's Trash."),
         ("What do the colours mean?", "Colour: Folder gives each child of the folder in view its own hue, lighter ring by ring, so zooming in recolours the children apart; Colour: Kind colours by what things are — apps, caches, photos. The rail and the icon share the same six-hue ladder."),
         ("What about iCloud, Google Drive, OneDrive?", "They're synced folders on this Mac, listed under Cloud storage. Broom measures what's downloaded here; “cloud-only” items use no space and are counted as such."),
-        ("And the rings?", "Each ring is one level of folders, biggest at twelve o'clock going clockwise. The centre takes you up one level, a slice zooms in, and the list mirrors the chart."),
+        ("And the rings?", "Each ring is one level of folders, biggest at twelve o'clock going clockwise. The centre takes you up one level, a slice zooms in, and the list mirrors the chart when it's sorted by size."),
+        ("What grew? Duplicates?", "Each scan is remembered (folder sizes only, kept a week), so the next scan of the same place shows what grew: +1.2 GB in amber, shrinkage in green. Duplicate files appear as a finding once the scan is done: identical copies, compared byte for byte, of your own files only. APFS clones and hard links are left out, since deleting them frees nothing."),
+        ("Getting around", "Sort the list by Size, Name or Modified; click the same one again to flip it. Drag a column's edge to resize it, double-click to reset. ⌘C copies the selected row's path (or the open folder's), and hovering a path that's cut short shows all of it. A folder's date is when something directly inside it was added or removed, as in Finder."),
     ];
     div()
         .flex()
@@ -5354,6 +5944,13 @@ fn fit_label(window: &Window, text: &str, max_width: f32, font: &gpui::Font, siz
     None
 }
 
+/// Hover a path that may be cut short and the whole of it turns up in a
+/// caption box.
+fn path_tip(el: Stateful<gpui::Div>, path: String) -> Stateful<gpui::Div> {
+    let path: SharedString = path.into();
+    el.tooltip(move |_, cx| cx.new(|_| comic::PathCaption(path.clone())).into())
+}
+
 fn icon_button(id: impl Into<gpui::ElementId>, glyph: &'static str, tooltip: &'static str) -> Stateful<gpui::Div> {
     div()
         .id(id)
@@ -5394,4 +5991,28 @@ fn meter(fraction: f32, fill: Hsla) -> impl IntoElement {
         // read as a stray line over glass.
         .bg(theme::overlay(0.12))
         .child(div().h_full().w(relative(fraction.clamp(0.0, 1.0))).rounded_full().bg(color))
+}
+
+#[cfg(test)]
+mod column_tests {
+    use super::*;
+
+    #[test]
+    fn columns_that_fit_are_left_alone() {
+        assert_eq!(fit_columns([200.0, 300.0, 300.0], 1400.0), [200.0, 300.0, 300.0]);
+    }
+
+    #[test]
+    fn a_narrow_window_squeezes_the_widest_first() {
+        let fitted = fit_columns([360.0, 680.0, 560.0], 1440.0);
+        let total: f32 = fitted.iter().sum::<f32>() + CHART_MIN_WIDTH;
+        assert!((total - 1440.0).abs() < 1.0, "{fitted:?}");
+        assert!(fitted[1] <= 680.0 - 120.0, "{fitted:?}");
+        assert!(fitted[0] >= 150.0 && fitted[1] >= 220.0 && fitted[2] >= 240.0);
+    }
+
+    #[test]
+    fn floors_hold_even_when_nothing_fits() {
+        assert_eq!(fit_columns([360.0, 680.0, 560.0], 400.0), [150.0, 220.0, 240.0]);
+    }
 }

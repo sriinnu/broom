@@ -5,9 +5,11 @@ mod classify;
 mod clock;
 mod comic;
 mod dirlist;
+mod duplicates;
 mod disk;
 mod eta;
 mod findings;
+mod history;
 mod live;
 mod menubar;
 mod motion;
@@ -29,7 +31,8 @@ use gpui::{App, KeyBinding, Menu, MenuItem, actions};
 
 use app::{
     About, CloseAbout, CloseReview, CloseSettings, DismissQuery, FocusQuery, GoUp, OpenFolder, OpenSelected, OpenSettings, Rescan,
-    SelectNext, SelectPrev, StartOver, SubmitQuery, ToggleStaged,
+    SelectNext, SelectPrev, StartOver, SubmitQuery, ToggleStaged, CopyPath, CopyRelativePath,
+    SortBySize, SortByName, SortByModified,
 };
 
 actions!(broom, [Quit]);
@@ -108,6 +111,12 @@ fn main() {
             KeyBinding::new("enter", OpenSelected, Some("Broom && !EditableText")),
             KeyBinding::new("left", GoUp, Some("Broom && !EditableText")),
             KeyBinding::new("space", ToggleStaged, Some("Broom && !EditableText")),
+            KeyBinding::new("cmd-c", CopyPath, Some("Broom && !EditableText")),
+            KeyBinding::new("cmd-shift-c", CopyRelativePath, Some("Broom && !EditableText")),
+            KeyBinding::new("/", FocusQuery, Some("Broom && !EditableText")),
+            KeyBinding::new("cmd-1", SortBySize, Some("Broom")),
+            KeyBinding::new("cmd-2", SortByName, Some("Broom")),
+            KeyBinding::new("cmd-3", SortByModified, Some("Broom")),
             // The menu-bar panel: escape closes it, enter asks.
             KeyBinding::new("escape", panel::ClosePanel, Some("SearchPanel")),
         ]);
@@ -135,8 +144,22 @@ fn main() {
                 disabled: false,
             },
             Menu {
+                name: "View".into(),
+                items: vec![
+                    MenuItem::action("Sort by Size", SortBySize),
+                    MenuItem::action("Sort by Name", SortByName),
+                    MenuItem::action("Sort by Date Modified", SortByModified),
+                ],
+                disabled: false,
+            },
+            Menu {
                 name: "Go".into(),
-                items: vec![MenuItem::action("Enclosing Folder", GoUp)],
+                items: vec![
+                    MenuItem::action("Enclosing Folder", GoUp),
+                    MenuItem::separator(),
+                    MenuItem::action("Copy Path", CopyPath),
+                    MenuItem::action("Copy Path with ~", CopyRelativePath),
+                ],
                 disabled: false,
             },
         ]);

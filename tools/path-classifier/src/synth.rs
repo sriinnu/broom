@@ -460,7 +460,7 @@ const APPS: &[(&str, &str)] = &[
 ];
 
 const PROJECTS: &[&str] = &[
-    "website", "petal", "api", "backend", "frontend", "dashboard", "blog", "portfolio", "landing-page", "chat-app", "todo", "notes-app", "game",
+    "website", "orbit", "api", "backend", "frontend", "dashboard", "blog", "portfolio", "landing-page", "chat-app", "todo", "notes-app", "game",
     "engine", "compiler", "parser", "cli", "bot", "scraper", "ml-experiments", "data-pipeline", "infra", "ios-app", "android-app", "app", "mobile",
     "shop", "admin", "auth-service", "payments", "analytics", "search", "indexer", "crawler", "renderer", "synth", "midi-tool", "raytracer",
     "kernel", "emulator", "wasm-demo", "rust-book", "advent-of-code", "leetcode", "homework", "thesis-code", "research", "sandbox", "playground",
@@ -517,7 +517,7 @@ mod tests {
         for name in ["Spotify", "Slack", "Code", "Obsidian", "Claude", "Steam", "Microsoft Excel"] {
             assert!(!train.apps.iter().any(|a| a.0 == name), "{name} leaked into training");
         }
-        for name in ["petal", "website", "dashboard", "app", "android-app", "ml-experiments", "scratch", "infra"] {
+        for name in ["orbit", "website", "dashboard", "app", "android-app", "ml-experiments", "scratch", "infra"] {
             assert!(!train.projects.contains(&name), "{name} leaked into training");
         }
     }

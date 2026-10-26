@@ -150,6 +150,16 @@ ctrl-click the 🧹 for the menu: open the window, rescan, quit.
 in; click the centre, or use the breadcrumbs, to go back up. Tick a folder or a finding to stage it,
 or drag it onto the plan. The search box at the top takes the same questions the panel does.
 
+Sort the list by Size, Name or Modified; click the same one again to flip it (↓/↑, A–Z/Z–A,
+Newest/Oldest). Drag the edge of any column to resize it; double-click the edge to reset it. The ⎘ by
+the breadcrumbs copies the open folder's path, and hovering a path that's cut short shows all of it.
+
+Broom remembers each scan (folder sizes only, for a week), so scanning the same place again shows
+what grew since: `+1.2 GB` in amber beside a folder, shrinkage in green. Once a scan finishes,
+identical copies of your own files show up as a **Duplicate files** finding (compared byte for
+byte; APFS clones and hard links don't count, since deleting them frees nothing). After a move to
+the Trash, the banner has a **Put back** button for a few seconds.
+
 | Keys | Action |
 |---|---|
 | ⌘F | Search or ask |
@@ -157,6 +167,10 @@ or drag it onto the plan. The search box at the top takes the same questions the
 | → or Enter | Open the selected folder |
 | ← , ⌫, Esc or ⌘↑ | Go to the enclosing folder |
 | Space | Stage or unstage the selected row |
+| ⌘C | Copy the selected row's path (or the open folder's) |
+| ⇧⌘C | The same, with your home folder as `~` |
+| / | Search or ask |
+| ⌘1 ⌘2 ⌘3 | Sort by size, name, date modified (again to flip) |
 | ⌘O | Choose a folder to scan |
 | ⌘R | Rescan |
 | ⇧⌘D | Back to the Disks screen |
@@ -215,7 +229,7 @@ src/
 ├── findings.rs    the catalog of known space hogs and how to recognise them
 ├── sunburst.rs    layout in angle space, painting, polar hit-testing
 ├── theme.rs       the five themes: palettes for light and dark, radius, fonts, the six-hue ladder
-├── settings.rs    settings file, state dir (migrates from the Petal days)
+├── settings.rs    settings file and state dir
 ├── secrets.rs     keychain
 ├── onboarding.rs  first run and Full Disk Access detection
 ├── motion.rs      easing segments between live snapshots
@@ -299,9 +313,8 @@ uv run --with pillow python3 -I scripts/make-icon.py packaging
 
 ## Credits
 
-- Broom started as a fork of [Petal](https://github.com/henrydennis/petal) by Henry Dennis, which
-  built the scanner, the exact APFS accounting and the live sunburst. The menu-bar panel, the ask
-  engine, the redesigned window and the investigator are Broom's.
+- Broom is inspired by [Petal](https://github.com/henrydennis/petal) by Henry Dennis, and started
+  as a fork of it.
 - The sunburst idea goes back to [DaisyDisk](https://daisydiskapp.com). Broom is an independent
   project, not affiliated with it.
 - Built on [GPUI CE](https://github.com/gpui-ce/gpui-ce), [rayon](https://github.com/rayon-rs/rayon),

@@ -97,6 +97,31 @@ pub fn install(window: &mut Window, cx: &mut Context<Broom>) {
                     })
                     .ok();
                 }
+                // `key cmd-3`: type a keystroke, as the keymap sees it.
+                "key" => {
+                    if let Some(Ok(keystroke)) = parts.get(1).map(|k| gpui::Keystroke::parse(k)) {
+                        cx.update(|window, cx| window.dispatch_keystroke(keystroke, cx)).ok();
+                    }
+                }
+                // `drag x0 y0 x1 y1`: press, move with the button held, release.
+                "drag" => {
+                    let (from, to) = (point(px(num(1)), px(num(2))), point(px(num(3)), px(num(4))));
+                    cx.update(|window, cx| {
+                        let modifiers = Default::default();
+                        move_to(window, cx, from);
+                        window.refresh();
+                        window.dispatch_event(
+                            PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: from, modifiers, click_count: 1, first_mouse: false }),
+                            cx,
+                        );
+                        window.dispatch_event(
+                            PlatformInput::MouseMove(MouseMoveEvent { position: to, pressed_button: Some(MouseButton::Left), modifiers }),
+                            cx,
+                        );
+                        window.dispatch_event(PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position: to, modifiers, click_count: 1 }), cx);
+                    })
+                    .ok();
+                }
                 // `until-done secs`: wait for the scan to finish (bounded).
                 "until-done" => {
                     let deadline = std::time::Instant::now() + Duration::from_secs_f32(num(1).max(1.0));

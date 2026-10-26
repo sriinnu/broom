@@ -630,7 +630,10 @@ impl Panel {
                 .border_1()
                 .border_color(rgb(colors().border))
                 .bg(rgb(colors().popover_card))
-                .text_size(px(13.)),
+                .text_size(px(13.))
+                // One line as tall as the field inside its border: the element draws
+                // from the top, so this, not flex, is what centres the text.
+                .line_height(px(32.)),
         )
     }
 
