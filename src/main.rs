@@ -30,7 +30,7 @@ use std::path::PathBuf;
 use gpui::{App, KeyBinding, Menu, MenuItem, actions};
 
 use app::{
-    About, CloseAbout, CloseReview, CloseSettings, DismissQuery, FocusQuery, GoUp, GoBack, GoForward, ToggleRail, OpenFolder, OpenSelected, OpenSettings, Rescan,
+    About, CloseAbout, CloseReview, CloseSettings, DismissQuery, FocusQuery, GoUp, GoBack, GoForward, ToggleRail, SelectAll, OpenFolder, OpenSelected, OpenSettings, Rescan,
     SelectNext, SelectPrev, StartOver, SubmitQuery, ToggleStaged, CopyPath, CopyRelativePath,
     SortBySize, SortByName, SortByModified,
 };
@@ -98,6 +98,7 @@ fn main() {
             KeyBinding::new("ctrl-left", GoBack, Some("Broom && !EditableText")),
             KeyBinding::new("ctrl-right", GoForward, Some("Broom && !EditableText")),
             KeyBinding::new("cmd-alt-s", ToggleRail, Some("Broom")),
+            KeyBinding::new("cmd-a", SelectAll, Some("Broom && !EditableText")),
             KeyBinding::new("cmd-shift-d", StartOver, None),
             KeyBinding::new("cmd-f", FocusQuery, None),
             KeyBinding::new("enter", SubmitQuery, Some("EditableText")),
@@ -155,6 +156,19 @@ fn main() {
                     MenuItem::action("Sort by Size", SortBySize),
                     MenuItem::action("Sort by Name", SortByName),
                     MenuItem::action("Sort by Date Modified", SortByModified),
+                    MenuItem::separator(),
+                    MenuItem::action("Hide or Show Sidebar", ToggleRail),
+                ],
+                disabled: false,
+            },
+            Menu {
+                name: "Go".into(),
+                items: vec![
+                    MenuItem::action("Back", GoBack),
+                    MenuItem::action("Forward", GoForward),
+                    MenuItem::action("Enclosing Folder", GoUp),
+                    MenuItem::separator(),
+                    MenuItem::action("Select All", SelectAll),
                 ],
                 disabled: false,
             },

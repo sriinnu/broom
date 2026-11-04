@@ -173,7 +173,7 @@ the Trash, the banner has a **Put back** button for a few seconds.
 | ⌘1 ⌘2 ⌘3 | Sort by size, name, date modified (again to flip) |
 | ⌘[ ⌘] | Back and forward through the folders you've visited |
 | ⌥⌘S | Hide or show the sidebar |
-| ⇧-click, ⌘- or ⌃-click | Pick a range of rows, or add and remove one; space and ⌘C act on all of them |
+| ⇧-click, ⌘- or ⌃-click, ⌘A | Pick a range of rows, add or remove one, or take them all; space and ⌘C act on all of them, esc lets go |
 | ⌘O | Choose a folder to scan |
 | ⌘R | Rescan |
 | ⇧⌘D | Back to the Disks screen |

@@ -53,12 +53,15 @@ actions!(broom, [
     OpenSettings, CloseSettings, About, CloseAbout,
     SelectNext, SelectPrev, OpenSelected, ToggleStaged, CloseReview, CopyPath, CopyRelativePath,
     SortBySize, SortByName, SortByModified,
-    GoBack, GoForward, ToggleRail
+    GoBack, GoForward, ToggleRail, SelectAll
 ]);
 
 
 /// Where the source, releases and issues live.
 const REPO_URL: &str = "https://github.com/sriinnu/broom";
+
+/// Plan rows drawn. Beyond this a list is unreadable anyway, and every row costs a frame.
+const PLAN_ROWS: usize = 300;
 
 /// The chart keeps at least this much when a column is dragged wider.
 const CHART_MIN_WIDTH: f32 = 320.0;
@@ -441,6 +444,8 @@ struct Results {
     /// Modification times, read on demand when the list sorts by them; `None`
     /// where there's nothing to stat (the APFS remainder) or the stat failed.
     mtimes: HashMap<usize, Option<SystemTime>>,
+    /// Creation times, read alongside the modification times.
+    ctimes: HashMap<usize, Option<SystemTime>>,
     /// Rows the Modified sort still needs times for; Broom stats them in the
     /// background and re-sorts when they land.
     mtimes_wanted: Vec<usize>,
@@ -468,6 +473,8 @@ struct Results {
     /// The user wants dates in the list whatever it's sorted by. Sorting by
     /// Modified shows them anyway; see `dates_shown`.
     show_modified: bool,
+    /// The user wants creation dates in the list.
+    show_created: bool,
     /// Some listed row has a change worth showing, so the growth column earns
     /// its width. An empty one used to squeeze names down to a letter or two.
     growth_listed: bool,
@@ -545,6 +552,7 @@ impl Results {
             sort,
             descending,
             mtimes: HashMap::new(),
+            ctimes: HashMap::new(),
             mtimes_wanted: Vec::new(),
             mtimes_loading: false,
             growth_since: None,
@@ -556,6 +564,7 @@ impl Results {
             picked: HashSet::new(),
             elapsed,
             show_modified,
+            show_created: false,
             growth_listed: false,
             requested_root,
             findings,
@@ -636,7 +645,7 @@ impl Results {
         order.sort_by_key(|&ix| tree.nodes[ix].kind == Kind::Other);
         self.order = order;
         // Times are wanted whenever they'd be drawn or sorted by.
-        self.mtimes_wanted = if self.dates_shown() {
+        self.mtimes_wanted = if self.dates_shown() || self.show_created {
             self.order.iter().copied().filter(|ix| !self.mtimes.contains_key(ix)).collect()
         } else {
             Vec::new()
@@ -666,10 +675,7 @@ impl Results {
         if self.picked.is_empty() {
             return self.selected.into_iter().collect();
         }
-        let rank = |ix: usize| self.order.iter().position(|&o| o == ix).unwrap_or(usize::MAX);
-        let mut picked: Vec<usize> = self.picked.iter().copied().collect();
-        picked.sort_by_key(|&ix| rank(ix));
-        picked
+        self.order.iter().copied().filter(|ix| self.picked.contains(ix)).collect()
     }
 
     /// ⌘- or ⌃-click toggles one row without losing the rest; ⇧-click takes
@@ -679,13 +685,16 @@ impl Results {
         if additive {
             // The lit cursor row is part of what you're adding to, as in Finder.
             if self.picked.is_empty() {
-                self.picked.extend(self.selected.filter(|&s| s != ix && self.order.contains(&s)));
+                self.picked.extend(self.selected.filter(|s| self.order.contains(s)));
             }
-            if !self.picked.remove(&ix) {
+            // The cursor only ever sits on a lit row: the next ⇧-click measures
+            // from it, and Enter opens it, so it can't be somewhere you can't see.
+            self.selected = if self.picked.remove(&ix) {
+                None
+            } else {
                 self.picked.insert(ix);
-            }
-            // Next ⇧-click measures from here. Nothing left picked means nothing lit.
-            self.selected = if self.picked.is_empty() { None } else { Some(ix) };
+                Some(ix)
+            };
         } else if range {
             let to = self.row_of(ix).unwrap_or(0);
             let from = self.selected.and_then(|s| self.row_of(s)).unwrap_or(to);
@@ -696,6 +705,13 @@ impl Results {
             self.picked.clear();
             self.selected = Some(ix);
         }
+    }
+
+    /// ⌘A: every real row in the list. The APFS remainder and the like aren't
+    /// things you can act on, so they stay out.
+    fn pick_all(&mut self) {
+        let tree = &self.tree;
+        self.picked = self.order.iter().copied().filter(|&ix| tree.nodes[ix].kind != Kind::Other).collect();
     }
 
     /// What ⌘C copies: every lit row's path, one per line, or the open folder's
@@ -775,6 +791,20 @@ impl Results {
         }
     }
 
+    /// A folder we could still stand in: not trashed, and so not detached.
+    fn can_stand_in(&self, ix: usize) -> bool {
+        self.tree.nodes.get(ix).is_some_and(|n| n.kind == Kind::Dir && (n.parent.is_some() || ix == Tree::ROOT))
+    }
+
+    /// The button lights only if a step would really go somewhere.
+    fn can_travel(&self, way: Travel) -> bool {
+        let stack = match way {
+            Travel::Back => &self.back,
+            Travel::Forward => &self.fwd,
+        };
+        stack.iter().any(|&ix| ix != self.focus && self.can_stand_in(ix))
+    }
+
     /// Take one step through the history, remembering where we were so the
     /// opposite direction can undo it. Entries that stopped being folders we can
     /// stand in (trashed, so detached) are dropped on the way past.
@@ -785,8 +815,7 @@ impl Results {
                 Travel::Forward => self.fwd.pop(),
             };
             let Some(ix) = step else { return false };
-            let live = self.tree.nodes.get(ix).is_some_and(|n| n.kind == Kind::Dir && (n.parent.is_some() || ix == Tree::ROOT));
-            if !live || ix == self.focus {
+            if !self.can_stand_in(ix) || ix == self.focus {
                 continue;
             }
             match way {
@@ -892,6 +921,57 @@ impl Results {
                     self.collect(n);
                 }
             }
+        }
+    }
+
+    /// Stage these rows together. One pass over the plan rather than one per row:
+    /// ⌘A in a big folder can be a hundred thousand of them.
+    fn stage_rows(&mut self, rows: &[usize]) {
+        let tree = &self.tree;
+        let mut wanted: HashSet<usize> = self.collector.iter().copied().collect();
+        let start = wanted.len();
+        wanted.extend(rows.iter().copied().filter(|&ix| ix != Tree::ROOT && tree.nodes[ix].parent.is_some() && tree.nodes[ix].kind != Kind::Other && !self.homes.contains(&ix)));
+        if wanted.len() == start {
+            return;
+        }
+        // Only the topmost of anything nested stays, as with one at a time.
+        let covered = |mut ix: usize| {
+            while let Some(parent) = tree.nodes[ix].parent {
+                if wanted.contains(&parent) {
+                    return true;
+                }
+                ix = parent;
+            }
+            false
+        };
+        let mut plan: Vec<usize> = self.collector.iter().copied().filter(|&c| !covered(c)).collect();
+        let already: HashSet<usize> = plan.iter().copied().collect();
+        plan.extend(rows.iter().copied().filter(|ix| wanted.contains(ix) && !already.contains(ix) && !covered(*ix)));
+        self.collector = plan;
+        self.collector_frees.set(None);
+    }
+
+    /// Space on the lit rows: all of them are staged already, so let them go;
+    /// otherwise stage the rest. Never a flip per row, which would undo a plan
+    /// the moment one new row joined the picking.
+    fn toggle_rows(&mut self, rows: &[usize]) {
+        let staged: HashSet<usize> = self.collector.iter().copied().collect();
+        let on = |mut ix: usize| loop {
+            if staged.contains(&ix) {
+                return true;
+            }
+            match self.tree.nodes[ix].parent {
+                Some(parent) => ix = parent,
+                None => return false,
+            }
+        };
+        let rows: Vec<usize> = rows.iter().copied().filter(|&ix| self.stageable(ix)).collect();
+        if rows.iter().all(|&ix| on(ix)) {
+            let rows: HashSet<usize> = rows.into_iter().collect();
+            self.collector.retain(|c| !rows.contains(c));
+            self.collector_frees.set(None);
+        } else {
+            self.stage_rows(&rows);
         }
     }
 
@@ -1488,10 +1568,15 @@ impl Broom {
                 if let Some(r) = this.results().filter(|r| r.scan_id == scan_id) {
                     for (folder, fresh) in &folders {
                         if let Some(ix) = r.tree.find(folder) {
+                            // The graft detaches what was inside; don't be left standing in it.
+                            if r.tree.is_ancestor_or_self(ix, r.focus) {
+                                r.focus = ix;
+                            }
                             Arc::make_mut(&mut r.tree).graft(ix, fresh);
                         }
                     }
                     r.mtimes.clear();
+                    r.ctimes.clear();
                     recompute = r.tree_changed();
                 }
                 if recompute {
@@ -1525,6 +1610,7 @@ impl Broom {
             }
             // The folders they left have new modification times.
             r.mtimes.clear();
+            r.ctimes.clear();
             findings::prune_after_removal(&mut r.findings, &r.tree);
             recompute = r.tree_changed();
         }
@@ -1602,6 +1688,7 @@ impl Broom {
                                 Arc::make_mut(&mut r.tree).graft(ix, &fresh);
                                 // The Trash changed under us; its times did too.
                                 r.mtimes.clear();
+                                r.ctimes.clear();
                                 findings::prune_after_removal(&mut r.findings, &r.tree);
                                 findings::refresh_location(&mut r.findings, &r.tree, &bases, "Trash");
                                 recompute = r.tree_changed();
@@ -1762,6 +1849,7 @@ impl Broom {
                         };
                         let root_str = root_for_results.to_string_lossy().into_owned();
                         let mut results = Results::new(tree, findings, clock::since(started), root_for_results, this.color_by, this.sort, this.sort_descending, this.show_modified);
+                        results.show_created = this.settings.show_created;
                         let ix = resolve_path(&results.tree, &focus);
                         if ix != Tree::ROOT {
                             results.navigate(ix);
@@ -1916,6 +2004,12 @@ impl Broom {
             return;
         }
         if let Screen::Results(r) = &mut self.screen {
+            // A picking is the next thing on top: it took effort, and going up would lose it.
+            if !r.picked.is_empty() {
+                r.picked.clear();
+                cx.notify();
+                return;
+            }
             if let Some(parent) = r.tree.nodes[r.focus].parent {
                 r.navigate(parent);
                 cx.notify();
@@ -1944,9 +2038,22 @@ impl Broom {
         self.travel(Travel::Forward, cx);
     }
 
+    fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
+        if self.modal.is_some() || self.review.is_some() {
+            return;
+        }
+        if let Some(r) = self.results() {
+            r.pick_all();
+            cx.notify();
+        }
+    }
+
     /// Hide or show the disks and folders column. With nothing scanned it's
-    /// the only way to start, so it stays whatever the setting says.
+    /// the only way to start, so there it stays, and the shortcut does nothing.
     fn toggle_rail(&mut self, _: &ToggleRail, _: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.screen, Screen::Start) {
+            return;
+        }
         self.settings.rail_collapsed = !self.settings.rail_collapsed;
         let _ = settings::save(&self.settings);
         cx.notify();
@@ -2554,14 +2661,24 @@ impl Broom {
         cx.notify();
     }
 
-    /// Show or hide dates in the list. A Modified sort keeps showing them either
-    /// way, so this never changes how the list is ordered.
+    /// Show or hide dates in the list. A Modified sort asks for them either way
+    /// (room permitting), so this never changes how the list is ordered.
     fn set_show_modified(&mut self, show: bool, cx: &mut Context<Self>) {
         self.show_modified = show;
         self.settings.show_modified = show;
         let _ = settings::save(&self.settings);
         if let Some(r) = self.results() {
             r.show_modified = show;
+            r.reorder();
+        }
+        cx.notify();
+    }
+
+    fn set_show_created(&mut self, show: bool, cx: &mut Context<Self>) {
+        self.settings.show_created = show;
+        let _ = settings::save(&self.settings);
+        if let Some(r) = self.results() {
+            r.show_created = show;
             r.reorder();
         }
         cx.notify();
@@ -2754,6 +2871,7 @@ impl Broom {
             None => last,
             Some(p) => (p as isize + delta).clamp(0, last as isize) as usize,
         };
+        r.picked.clear();
         r.selected = Some(r.order[pos]);
         r.list_scroll.scroll_to_item(pos, ScrollStrategy::Nearest);
         cx.notify();
@@ -2787,23 +2905,13 @@ impl Broom {
             return;
         }
         let Some(r) = self.results() else { return };
-        // Space acts on every lit row, top to bottom, so a ⌃-click picking
-        // followed by one space stages the lot in list order.
-        let picked = r.selection();
-        if picked.is_empty() {
+        let rows = r.selection();
+        if rows.is_empty() {
             return;
         }
-        let mut any = false;
-        for ix in picked {
-            if r.stageable(ix) {
-                r.toggle_staged(ix);
-                any = true;
-            }
-        }
-        if any {
-            self.collector_changed(cx);
-            cx.notify();
-        }
+        r.toggle_rows(&rows);
+        self.collector_changed(cx);
+        cx.notify();
     }
 
     /// ⌘C in the navigator: the selected row's full path, or the open folder's.
@@ -2896,7 +3004,7 @@ impl Broom {
         .detach();
     }
 
-    /// Stat whatever the Modified sort is waiting on, off the main thread: a
+    /// Stat whatever the date columns and the Modified sort are waiting on, off the main thread: a
     /// folder can hold a hundred thousand entries, or sit on a slow disk.
     fn fetch_mtimes(&mut self, cx: &mut Context<Self>) {
         let Screen::Results(r) = &mut self.screen else { return };
@@ -2921,17 +3029,25 @@ impl Broom {
         r.mtimes_loading = true;
         let scan_id = r.scan_id;
         cx.spawn(async move |this, cx| {
-            let times: Vec<(usize, Option<SystemTime>)> = cx
+            let times: Vec<(usize, Option<SystemTime>, Option<SystemTime>)> = cx
                 .background_spawn(async move {
                     jobs.into_iter()
-                        .map(|(ix, path)| (ix, path.and_then(|p| std::fs::symlink_metadata(p).and_then(|m| m.modified()).ok())))
+                        .map(|(ix, path)| {
+                            let meta = path.and_then(|p| std::fs::symlink_metadata(p).ok());
+                            let modified = meta.as_ref().and_then(|m| m.modified().ok());
+                            let created = meta.as_ref().and_then(|m| m.created().ok());
+                            (ix, modified, created)
+                        })
                         .collect()
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 let Some(r) = this.results().filter(|r| r.scan_id == scan_id) else { return };
                 r.mtimes_loading = false;
-                r.mtimes.extend(times);
+                for (ix, modified, created) in times {
+                    r.mtimes.insert(ix, modified);
+                    r.ctimes.insert(ix, created);
+                }
                 if r.sort == SortBy::Modified {
                     r.reorder();
                 }
@@ -3163,6 +3279,7 @@ impl Render for Broom {
             .on_action(cx.listener(Self::go_back))
             .on_action(cx.listener(Self::go_forward))
             .on_action(cx.listener(Self::toggle_rail))
+            .on_action(cx.listener(Self::select_all))
             .size_full()
             .flex()
             .flex_col()
@@ -3575,6 +3692,51 @@ impl Broom {
                                 this.set_show_modified(next, cx);
                             }))
                             .child(if self.settings.show_modified { "On" } else { "Off" }),
+                    ),
+            )
+            .child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .rounded(theme::radius(8.))
+                    .bg(rgb(colors().card))
+                    .border_1()
+                    .border_color(rgb(colors().border))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(div().text_sm().child("Show date created"))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(colors().muted))
+                                    .child("When each item first appeared on this disk"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("toggle-created")
+                            .rounded(theme::radius(6.))
+                            .px_2()
+                            .py_0p5()
+                            .text_xs()
+                            .cursor_pointer()
+                            .when(self.settings.show_created, |d| {
+                                d.bg(rgb(colors().accent)).text_color(rgb(colors().on_accent))
+                            })
+                            .when(!self.settings.show_created, |d| {
+                                d.bg(rgb(colors().card_hover)).text_color(rgb(colors().muted))
+                            })
+                            .hover(|d| d.text_color(rgb(colors().text)))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let next = !this.settings.show_created;
+                                this.set_show_created(next, cx);
+                            }))
+                            .child(if self.settings.show_created { "On" } else { "Off" }),
                     ),
             )
             .child(
@@ -4271,26 +4433,77 @@ fn rail_toggle(hidden: bool, cx: &mut Context<Broom>) -> impl IntoElement {
         .on_click(cx.listener(|this, _, window, cx| this.toggle_rail(&ToggleRail, window, cx)))
 }
 
+/// One date in a navigator row, as an age.
+fn date_cell(when: Option<SystemTime>) -> impl IntoElement {
+    div()
+        .w(px(DATE_COLUMN))
+        .flex_none()
+        .text_right()
+        .text_color(rgb(colors().muted))
+        .text_xs()
+        .font_family(theme::current().mono)
+        .child(when.map(format_age).unwrap_or_default())
+}
+
+/// Names the date columns: two bare ages side by side couldn't be told apart.
+/// Lines up with the rows, so it mirrors their padding and widths.
+fn date_header(columns: RowColumns) -> impl IntoElement {
+    let label = |text: &'static str| div().w(px(DATE_COLUMN)).flex_none().text_right().child(text);
+    div()
+        .flex_none()
+        .mx_2()
+        .px_1p5()
+        .border_x_1()
+        .border_color(gpui::hsla(0., 0., 0., 0.))
+        .flex()
+        .justify_end()
+        .gap_1p5()
+        .text_size(px(10.))
+        .text_color(rgb(colors().muted))
+        .when(columns.growth, |d| d.child(div().w(px(64.)).flex_none()))
+        .when(columns.modified, |d| d.child(label("Modified")))
+        .when(columns.created, |d| d.child(label("Created")))
+        .child(div().w(px(72.)).flex_none())
+        .child(div().w(px(10.)).flex_none())
+}
+
 /// macOS turns ⌃-click into a right click before gpui passes it on, with the
 /// control flag wiped, so only AppKit can still tell the two apart.
 fn control_held() -> bool {
     NSEvent::modifierFlags_class().contains(NSEventModifierFlags::Control)
 }
 
-/// Which optional columns a navigator row of this width can afford, dates first.
-/// The name comes before either: below this much it stops saying what the row is.
-fn row_columns(pane: f32, dates: bool, growth: bool) -> (bool, bool) {
+/// The optional columns of a navigator row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RowColumns {
+    modified: bool,
+    created: bool,
+    growth: bool,
+}
+
+/// How wide a date column is: "Modified" over it at the header's size, "12mo" in it.
+const DATE_COLUMN: f32 = 48.0;
+
+/// Which optional columns a navigator row of this width can afford, modified
+/// first. The name comes before any: below this much it stops saying what the row is.
+fn row_columns(pane: f32, modified: bool, created: bool, growth: bool) -> RowColumns {
     // List and row padding, checkbox, swatch, size, chevron, and the gaps between.
     const FIXED: f32 = 16.0 + 14.0 + 15.0 + 11.0 + 72.0 + 10.0 + 24.0;
     const NAME_FLOOR: f32 = 64.0;
-    const DATES: f32 = 40.0 + 6.0;
+    const DATE: f32 = DATE_COLUMN + 6.0;
     const GROWTH: f32 = 64.0 + 6.0;
     let mut room = pane - FIXED - NAME_FLOOR;
-    let dates = dates && room >= DATES;
-    if dates {
-        room -= DATES;
-    }
-    (dates, growth && room >= GROWTH)
+    let mut fits = |wanted: bool, width: f32| {
+        let fits = wanted && room >= width;
+        if fits {
+            room -= width;
+        }
+        fits
+    };
+    let modified = fits(modified, DATE);
+    let created = fits(created, DATE);
+    let growth = fits(growth, GROWTH);
+    RowColumns { modified, created, growth }
 }
 
 /// What the menu-bar menu shows per volume: name, capacity, free space.
@@ -4333,7 +4546,7 @@ impl Broom {
                         button("back", "‹")
                             .text_base()
                             .px_2()
-                            .when(r.back.is_empty(), |b| b.opacity(0.4))
+                            .when(!r.can_travel(Travel::Back), |b| b.opacity(0.4))
                             .tooltip(|_, cx| cx.new(|_| Tip("Back ⌘[".into())).into())
                             .on_click(cx.listener(|this, _, window, cx| this.go_back(&GoBack, window, cx))),
                     )
@@ -4341,7 +4554,7 @@ impl Broom {
                         button("forward", "›")
                             .text_base()
                             .px_2()
-                            .when(r.fwd.is_empty(), |b| b.opacity(0.4))
+                            .when(!r.can_travel(Travel::Forward), |b| b.opacity(0.4))
                             .tooltip(|_, cx| cx.new(|_| Tip("Forward ⌘]".into())).into())
                             .on_click(cx.listener(|this, _, window, cx| this.go_forward(&GoForward, window, cx))),
                     )
@@ -4593,10 +4806,13 @@ impl Broom {
 
     /// The navigator column's frame, shared by every screen.
     fn navigator_frame(&self, cx: &mut Context<Self>) -> gpui::Div {
+        self.navigator_column().child(self.pane_handle(Pane::Navigator, cx))
+    }
+
+    fn navigator_column(&self) -> gpui::Div {
         div()
             .w(px(self.pane_width(Pane::Navigator)))
             .relative()
-            .child(self.pane_handle(Pane::Navigator, cx))
             .flex_none()
             .h_full()
             .flex()
@@ -4610,8 +4826,9 @@ impl Broom {
     /// towards the rail.
     fn render_empty(&self, cx: &mut Context<Self>) -> impl IntoElement {
         // An empty list needn't hold its saved width; the welcome gets the room.
+        // That width is fixed here, so there's no edge to drag.
         let nav = self
-            .navigator_frame(cx)
+            .navigator_column()
             .w(px(self.pane_width(Pane::Navigator).min(settings::NAVIGATOR_WIDTH)))
             .child(
                 div()
@@ -5020,6 +5237,7 @@ impl Broom {
     /// The navigator: the focused folder's name and totals, the sort toggle, the
     /// ask card when a query is live, and the folder list.
     fn render_navigator(&self, r: &Results, cx: &mut Context<Self>) -> impl IntoElement {
+        let columns = row_columns(self.pane_width(Pane::Navigator), r.dates_shown(), r.show_created, r.growth_listed);
         let focus = &r.tree.nodes[r.focus];
         let count = r.order.len();
         // Click a key to sort by it; click it again to flip the direction.
@@ -5116,6 +5334,20 @@ impl Broom {
                 self.render_access_card(not_readable, cx)
             }).flatten())
             .when(r.matches.is_some() || !matches!(r.ask, AskState::Idle), |d| d.child(self.render_ask(r, cx)))
+            .when(r.picked.len() > 1, |d| {
+                let size: u64 = r.picked.iter().map(|&ix| r.tree.nodes[ix].size).sum();
+                d.child(
+                    div()
+                        .flex_none()
+                        .px_4()
+                        .pb_1()
+                        .text_xs()
+                        .text_color(rgb(colors().muted))
+                        .truncate()
+                        .child(format!("{} picked · {} · space stages · esc clears", r.picked.len(), format_size(size))),
+                )
+            })
+            .when(columns.modified || columns.created, |d| d.child(date_header(columns)))
             .child(
                 div().flex_1().min_h_0().px_2().pb_2().child(
                     uniform_list("children", count, cx.processor(Self::render_rows))
@@ -5263,7 +5495,7 @@ impl Broom {
         let Screen::Results(r) = &self.screen else { return Vec::new() };
         let focus = &r.tree.nodes[r.focus];
         let hovered = r.hovered();
-        let (show_dates, show_growth) = row_columns(self.pane_width(Pane::Navigator), r.dates_shown(), r.growth_listed);
+        let columns = row_columns(self.pane_width(Pane::Navigator), r.dates_shown(), r.show_created, r.growth_listed);
         range
             .filter_map(|i| r.order.get(i).copied())
             .map(|ix| {
@@ -5377,7 +5609,7 @@ impl Broom {
                             )),
                         )
                     })
-                    .when(show_growth, |d| {
+                    .when(columns.growth, |d| {
                         let delta = r.growth.get(&ix).copied().and_then(|g| format_delta(g).map(|text| (g, text)));
                         d.child(
                             div()
@@ -5391,19 +5623,8 @@ impl Broom {
                                 }),
                         )
                     })
-                    .when(show_dates, |d| {
-                        let modified = r.mtimes.get(&ix).copied().flatten();
-                        d.child(
-                            div()
-                                .w(px(40.))
-                                .flex_none()
-                                .text_right()
-                                .text_color(rgb(colors().muted))
-                                .text_xs()
-                                .font_family(theme::current().mono)
-                                .child(modified.map(format_age).unwrap_or_default()),
-                        )
-                    })
+                    .when(columns.modified, |d| d.child(date_cell(r.mtimes.get(&ix).copied().flatten())))
+                    .when(columns.created, |d| d.child(date_cell(r.ctimes.get(&ix).copied().flatten())))
                     .child(
                         div()
                             .w(px(72.))
@@ -5434,7 +5655,7 @@ impl Broom {
         let shared = frees.map(|f| size.saturating_sub(f));
 
         let mut list = div().id("plan-list").flex_1().min_h_0().overflow_y_scroll().px_1p5().flex().flex_col().gap_0p5();
-        for &ix in &r.collector {
+        for &ix in r.collector.iter().take(PLAN_ROWS) {
             let node = &r.tree.nodes[ix];
             let path = r.tree.path_of(ix);
             let parent = path.parent().map(|p| abbreviate_home(&p.to_string_lossy())).unwrap_or_default();
@@ -5497,7 +5718,12 @@ impl Broom {
             .on_drag_over::<DraggedItem>(|style, _, _, _| style.bg(rgb(colors().card)))
             .on_drop(cx.listener(|this, item: &DraggedItem, _, cx| {
                 if let Some(r) = this.results() {
-                    r.collect(item.node);
+                    if r.picked.contains(&item.node) {
+                        let rows = r.selection();
+                        r.stage_rows(&rows);
+                    } else {
+                        r.collect(item.node);
+                    }
                 }
                 this.collector_changed(cx);
                 cx.notify();
@@ -5537,6 +5763,9 @@ impl Broom {
                 )
             })
             .when(!empty, |d| d.child(list))
+            .when(r.collector.len() > PLAN_ROWS, |d| {
+                d.child(div().flex_none().px_3().pt_1().text_xs().text_color(rgb(colors().muted)).child(format!("and {} more; the totals and the review cover them all", format_count((r.collector.len() - PLAN_ROWS) as u64))))
+            })
             .child(
                 div()
                     .flex_none()
@@ -6096,7 +6325,7 @@ fn render_help() -> impl IntoElement {
         ("What about iCloud, Google Drive, OneDrive?", "They're synced folders on this Mac, listed under Cloud storage. Broom measures what's downloaded here; “cloud-only” items use no space and are counted as such."),
         ("And the rings?", "Each ring is one level of folders, biggest at twelve o'clock going clockwise. The centre takes you up one level, a slice zooms in, and the list mirrors the chart when it's sorted by size."),
         ("What grew? Duplicates?", "Each scan is remembered (folder sizes only, kept a week), so the next scan of the same place shows what grew: +1.2 GB in amber, shrinkage in green. Duplicate files appear as a finding once the scan is done: identical copies, compared byte for byte, of your own files only. APFS clones and hard links are left out, since deleting them frees nothing."),
-        ("Getting around", "Sort the list by Size, Name or Modified; click the same one again to flip it. Drag a column's edge to resize it, double-click to reset. ⇧-click takes a range of rows and ⌘- or ⌃-click adds or removes one; space and ⌘C then act on all of them. ⌘[ and ⌘] step back and forward through the folders you've visited, ⌥⌘S hides the sidebar. ⌘C copies the selected row's path (or the open folder's), and hovering a path that's cut short shows all of it. A folder's date is when something directly inside it was added or removed, as in Finder."),
+        ("Getting around", "Sort the list by Size, Name or Modified; click the same one again to flip it. Drag a column's edge to resize it, double-click to reset. ⇧-click takes a range of rows, ⌘- or ⌃-click adds or removes one and ⌘A takes them all; space and ⌘C then act on all of them, and esc lets go. Settings can add date modified and date created to the list. ⌘[ and ⌘] step back and forward through the folders you've visited, ⌥⌘S hides the sidebar. ⌘C copies the selected row's path (or the open folder's), and hovering a path that's cut short shows all of it. A folder's date is when something directly inside it was added or removed, as in Finder."),
     ];
     div()
         .flex()
@@ -6458,15 +6687,112 @@ mod pick_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Your screenshot's bug: an empty growth column and dates left the name 24pt.
+    /// An empty growth column and dates once left the name 24pt.
     #[test]
     fn optional_columns_never_squeeze_the_name_away() {
-        assert_eq!(row_columns(340.0, false, false), (false, false));
-        assert_eq!(row_columns(340.0, true, false), (true, false));
-        assert_eq!(row_columns(340.0, false, true), (false, true));
-        assert_eq!(row_columns(300.0, true, true), (true, false), "dates win when only one fits");
-        assert_eq!(row_columns(400.0, true, true), (true, true));
-        assert_eq!(row_columns(220.0, true, true), (false, false), "narrowest pane: just the name");
+        let cols = |modified, created, growth| RowColumns { modified, created, growth };
+        assert_eq!(row_columns(340.0, false, false, false), cols(false, false, false));
+        assert_eq!(row_columns(340.0, true, false, false), cols(true, false, false));
+        assert_eq!(row_columns(340.0, false, true, false), cols(false, true, false));
+        assert_eq!(row_columns(340.0, false, false, true), cols(false, false, true));
+        assert_eq!(row_columns(340.0, true, true, false), cols(true, true, false));
+        assert_eq!(row_columns(300.0, true, true, true), cols(true, false, false), "modified wins when only one fits");
+        assert_eq!(row_columns(380.0, true, false, true), cols(true, false, true), "the default width holds dates and growth");
+        assert_eq!(row_columns(500.0, true, true, true), cols(true, true, true));
+        assert_eq!(row_columns(220.0, true, true, true), cols(false, false, false), "narrowest pane: just the name");
+        for pane in [220.0, 260.0, 300.0, 340.0, 400.0, 680.0] {
+            let c = row_columns(pane, true, true, true);
+            let taken = 162.0 + if c.modified { 54.0 } else { 0.0 } + if c.created { 54.0 } else { 0.0 } + if c.growth { 70.0 } else { 0.0 };
+            assert!(pane - taken >= 58.0, "name left with {} at {pane}", pane - taken);
+        }
+    }
+
+    /// One new row must not undo the rows already staged.
+    #[test]
+    fn space_on_a_mixed_picking_stages_the_rest() {
+        let root = std::env::temp_dir().join(format!("broom-mix-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let tree = tree_with_three(&root);
+        let mut r = results_for(&root, &tree);
+        let (alpha, beta) = (row_named(&tree, "alpha"), row_named(&tree, "beta"));
+
+        r.toggle_rows(&[alpha]);
+        assert_eq!(r.collector, vec![alpha]);
+        r.toggle_rows(&[alpha, beta]);
+        assert_eq!(r.collector, vec![alpha, beta], "beta joined, alpha stayed");
+        r.toggle_rows(&[alpha, beta]);
+        assert!(r.collector.is_empty(), "all on: all off");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Staging together follows the same rules as one at a time: nothing nested.
+    #[test]
+    fn staging_a_folder_replaces_what_was_staged_inside_it() {
+        let root = std::env::temp_dir().join(format!("broom-nest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let tree = tree_with_three(&root);
+        let mut r = results_for(&root, &tree);
+        let alpha = row_named(&tree, "alpha");
+        let inside = tree.nodes[alpha].children[0];
+
+        r.stage_rows(&[inside]);
+        assert_eq!(r.collector, vec![inside]);
+        r.stage_rows(&[alpha]);
+        assert_eq!(r.collector, vec![alpha]);
+        r.stage_rows(&[inside]);
+        assert_eq!(r.collector, vec![alpha], "already covered");
+        r.stage_rows(&[Tree::ROOT]);
+        assert_eq!(r.collector, vec![alpha], "never the root");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The cursor never sits on an unlit row, so Enter can't open what you can't see.
+    #[test]
+    fn un_picking_a_row_takes_the_cursor_off_it() {
+        let root = std::env::temp_dir().join(format!("broom-cur-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let tree = tree_with_three(&root);
+        let mut r = results_for(&root, &tree);
+        let (alpha, beta) = (row_named(&tree, "alpha"), row_named(&tree, "beta"));
+
+        r.pick(alpha, true, false);
+        r.pick(beta, true, false);
+        r.pick(beta, true, false);
+        assert_eq!(r.selected, None);
+        assert_eq!(r.selection(), vec![alpha]);
+
+        // ⌘-clicking the lit row unlights it straight away, as in Finder.
+        r.picked.clear();
+        r.pick(alpha, false, false);
+        r.pick(alpha, true, false);
+        assert!(r.selection().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Asking for created dates alone still reads the times.
+    #[test]
+    fn created_dates_ask_for_times_too() {
+        let root = std::env::temp_dir().join(format!("broom-crt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let tree = tree_with_three(&root);
+        let mut r = results_for(&root, &tree);
+        r.show_created = true;
+        r.reorder();
+        assert_eq!(r.mtimes_wanted.len(), tree.nodes[Tree::ROOT].children.len());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ⌘A takes the real rows and nothing that can't be acted on.
+    #[test]
+    fn select_all_takes_every_real_row() {
+        let root = std::env::temp_dir().join(format!("broom-all-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let tree = tree_with_three(&root);
+        let mut r = results_for(&root, &tree);
+        r.pick_all();
+        assert_eq!(r.selection(), r.order);
+        assert_eq!(r.selection().len(), 3);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// No past scan differences means no growth column at all.
@@ -6663,6 +6989,25 @@ mod history_tests {
         assert_eq!(r.focus, Tree::ROOT);
         assert_eq!(r.selected, Some(a));
         assert!(r.picked.is_empty(), "those rows aren't listed here");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The Back button can't look live when only trashed folders are left behind it.
+    #[test]
+    fn nothing_to_go_back_to_when_only_trashed_folders_remain() {
+        let root = std::env::temp_dir().join(format!("broom-hist6-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let tree = tree_with_nested(&root);
+        let (a, b) = (child_of(&tree, Tree::ROOT, "a"), child_of(&tree, Tree::ROOT, "b"));
+        let mut r = Results::new(tree.clone(), Vec::new(), Duration::ZERO, root.clone(), ColorBy::Folder, SortBy::Size, true, false);
+
+        assert!(!r.can_travel(Travel::Back));
+        r.navigate(a);
+        assert!(r.can_travel(Travel::Back));
+        r.back.clear();
+        r.back.push(b);
+        Arc::make_mut(&mut r.tree).remove(b);
+        assert!(!r.can_travel(Travel::Back));
         let _ = std::fs::remove_dir_all(&root);
     }
 

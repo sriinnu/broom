@@ -78,6 +78,8 @@ pub struct Settings {
     /// Show dates in the navigator whatever the sort. Sorting by Modified shows
     /// them anyway; off by default so names keep the room.
     pub show_modified: bool,
+    /// Show creation dates in the navigator. Off by default for the same reason.
+    pub show_created: bool,
     /// The disks and folders column is hidden (⌥⌘S).
     pub rail_collapsed: bool,
     /// How Broom looks, and whether it follows macOS between light and dark.
@@ -97,7 +99,7 @@ pub struct Settings {
 
 /// Default column widths, and how far a drag may take each.
 pub const RAIL_WIDTH: f32 = 200.0;
-pub const NAVIGATOR_WIDTH: f32 = 340.0;
+pub const NAVIGATOR_WIDTH: f32 = 380.0;
 pub const CLEANUP_WIDTH: f32 = 300.0;
 pub const RAIL_RANGE: (f32, f32) = (150.0, 360.0);
 pub const NAVIGATOR_RANGE: (f32, f32) = (220.0, 680.0);
@@ -114,6 +116,7 @@ impl Default for Settings {
             color_by: ColorBy::Folder,
             menubar: true,
             show_modified: false,
+            show_created: false,
             rail_collapsed: false,
             theme: ThemeName::Classic,
             appearance: Appearance::Auto,
@@ -258,6 +261,7 @@ mod tests {
             settings.color_by = ColorBy::Kind;
             settings.menubar = false;
             settings.show_modified = true;
+            settings.show_created = true;
             settings.rail_collapsed = true;
             settings.default_root = "/Users".into();
             settings.last_root = Some("/Users/someone/Code".into());
