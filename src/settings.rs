@@ -75,6 +75,8 @@ pub struct Settings {
     pub color_by: ColorBy,
     /// Show the 🧹 extra in the menu bar.
     pub menubar: bool,
+    /// Show the Modified column in the navigator, whatever the sort.
+    pub show_modified: bool,
     /// How Broom looks, and whether it follows macOS between light and dark.
     pub theme: ThemeName,
     pub appearance: Appearance,
@@ -108,6 +110,7 @@ impl Default for Settings {
             banner_seconds: 8,
             color_by: ColorBy::Folder,
             menubar: true,
+            show_modified: true,
             theme: ThemeName::Classic,
             appearance: Appearance::Auto,
             default_root: DEFAULT_ROOT.to_string(),
