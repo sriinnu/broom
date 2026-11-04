@@ -4609,8 +4609,10 @@ impl Broom {
     /// Nothing scanned yet: an empty navigator and, where the chart goes, a nudge
     /// towards the rail.
     fn render_empty(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        // An empty list needn't hold its saved width; the welcome gets the room.
         let nav = self
             .navigator_frame(cx)
+            .w(px(self.pane_width(Pane::Navigator).min(settings::NAVIGATOR_WIDTH)))
             .child(
                 div()
                     .px_4()
@@ -4623,8 +4625,11 @@ impl Broom {
                     .child(div().text_xs().text_color(rgb(colors().muted)).child("Folders appear here as the scan runs.")),
             )
             .children(self.render_access_card(None, cx));
+        // Everything takes the column's width, up to its own limit, so a narrow
+        // column wraps the words instead of pushing them under the cleanup plan.
         let chart = div()
             .flex_1()
+            .min_w_0()
             .h_full()
             .flex()
             .flex_col()
@@ -4632,10 +4637,11 @@ impl Broom {
             .justify_center()
             .gap_3()
             .px_6()
-            .child(div().max_w(px(420.)).child(comic::investigator(comic::idle(), None, 56.0)))
-            .child(div().text_lg().font_family(theme::current().display).font_weight(FontWeight::SEMIBOLD).child("Pick a disk to scan"))
+            .child(div().w_full().max_w(px(420.)).child(comic::investigator(comic::idle(), None, 56.0)))
+            .child(div().text_lg().text_center().font_family(theme::current().display).font_weight(FontWeight::SEMIBOLD).child("Pick a disk to scan"))
             .child(
                 div()
+                    .w_full()
                     .max_w(px(380.))
                     .text_center()
                     .text_color(rgb(colors().muted))
