@@ -214,7 +214,7 @@ Exit codes: 0 done, 1 something failed (partial failures list what didn't move),
 src/
 ├── main.rs        app setup, menus, key bindings, command-line flags
 ├── cli.rs         headless scan / find / clean / trash for scripts and agents
-├── app.rs         the window: disks rail, folder list, sunburst, findings, cleanup plan, review
+├── app/           the window, one file per part: disks rail, folder list, sunburst, findings, cleanup plan, review
 ├── panel.rs       the menu-bar panel: query, groups, ticks, confirm, trash
 ├── menubar.rs     the NSStatusItem (objc2), its menu, and where to hang the panel
 ├── ask/           turning a question into groups: tokens, folder words, findings, worktrees,
