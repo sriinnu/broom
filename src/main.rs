@@ -30,7 +30,7 @@ use std::path::PathBuf;
 use gpui::{App, KeyBinding, Menu, MenuItem, actions};
 
 use app::{
-    About, CloseAbout, CloseReview, CloseSettings, DismissQuery, FocusQuery, GoUp, GoBack, GoForward, OpenFolder, OpenSelected, OpenSettings, Rescan,
+    About, CloseAbout, CloseReview, CloseSettings, DismissQuery, FocusQuery, GoUp, GoBack, GoForward, ToggleRail, OpenFolder, OpenSelected, OpenSettings, Rescan,
     SelectNext, SelectPrev, StartOver, SubmitQuery, ToggleStaged, CopyPath, CopyRelativePath,
     SortBySize, SortByName, SortByModified,
 };
@@ -92,12 +92,12 @@ fn main() {
             KeyBinding::new("cmd-up", GoUp, None),
             KeyBinding::new("backspace", GoUp, Some("Broom && !EditableText")),
             KeyBinding::new("escape", GoUp, None),
-            // Browser-style history. Cmd-[ / Cmd-] is what Finder and every Mac
-            // browser use, so Back/Forward land there as well as on ctrl-arrows.
+            // Back and forward, as in Finder and every Mac browser.
             KeyBinding::new("cmd-[", GoBack, Some("Broom && !EditableText")),
             KeyBinding::new("cmd-]", GoForward, Some("Broom && !EditableText")),
             KeyBinding::new("ctrl-left", GoBack, Some("Broom && !EditableText")),
             KeyBinding::new("ctrl-right", GoForward, Some("Broom && !EditableText")),
+            KeyBinding::new("cmd-alt-s", ToggleRail, Some("Broom")),
             KeyBinding::new("cmd-shift-d", StartOver, None),
             KeyBinding::new("cmd-f", FocusQuery, None),
             KeyBinding::new("enter", SubmitQuery, Some("EditableText")),

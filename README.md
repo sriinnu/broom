@@ -171,6 +171,9 @@ the Trash, the banner has a **Put back** button for a few seconds.
 | ⇧⌘C | The same, with your home folder as `~` |
 | / | Search or ask |
 | ⌘1 ⌘2 ⌘3 | Sort by size, name, date modified (again to flip) |
+| ⌘[ ⌘] | Back and forward through the folders you've visited |
+| ⌥⌘S | Hide or show the sidebar |
+| ⇧-click, ⌘- or ⌃-click | Pick a range of rows, or add and remove one; space and ⌘C act on all of them |
 | ⌘O | Choose a folder to scan |
 | ⌘R | Rescan |
 | ⇧⌘D | Back to the Disks screen |

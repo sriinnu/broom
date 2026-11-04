@@ -97,6 +97,17 @@ pub fn install(window: &mut Window, cx: &mut Context<Broom>) {
                     })
                     .ok();
                 }
+                // `click-with cmd|shift x y`: a click with a key held. (⌃-click can't be
+                // played this way: macOS turns it into a right click above gpui.)
+                "click-with" => {
+                    let position = point(px(num(2)), px(num(3)));
+                    let modifiers = gpui::Modifiers { platform: parts.get(1) == Some(&"cmd"), shift: parts.get(1) == Some(&"shift"), ..Default::default() };
+                    cx.update(|window, cx| {
+                        move_to(window, cx, position);
+                        click_holding(window, cx, position, modifiers);
+                    })
+                    .ok();
+                }
                 // `key cmd-3`: type a keystroke, as the keymap sees it.
                 "key" => {
                     if let Some(Ok(keystroke)) = parts.get(1).map(|k| gpui::Keystroke::parse(k)) {
@@ -219,7 +230,10 @@ fn move_to(window: &mut Window, cx: &mut gpui::App, position: Point<gpui::Pixels
 }
 
 fn click(window: &mut Window, cx: &mut gpui::App, position: Point<gpui::Pixels>) {
-    let modifiers = Default::default();
+    click_holding(window, cx, position, Default::default());
+}
+
+fn click_holding(window: &mut Window, cx: &mut gpui::App, position: Point<gpui::Pixels>, modifiers: gpui::Modifiers) {
     window.dispatch_event(
         PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position, modifiers, click_count: 1, first_mouse: false }),
         cx,
