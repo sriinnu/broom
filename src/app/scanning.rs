@@ -138,7 +138,14 @@ impl Broom {
                     })
                     .child({
                         let done = progress.expected_items.get().map(|&expected| eta::fraction(files + progress.dirs.load(Ordering::Relaxed), expected));
-                        div().mt_2().child(comic::investigator(comic::caption(&current, files), done, 56.0))
+                        let mut caption = comic::caption(&current, files);
+                        // Once the hotspots have measured something, the bubble
+                        // mentions it now and then.
+                        let early = progress.early_findings.lock().map(|e| e.clone()).unwrap_or_default();
+                        if let Some(aside) = delight::scan_aside(&early, elapsed, !caption.aside.is_empty()) {
+                            caption.aside = aside.into();
+                        }
+                        div().mt_2().child(comic::investigator(caption, done, 56.0))
                     }),
             )
             .children(scanning.focus.is_empty().then(|| self.render_access_card(None, cx)).flatten())

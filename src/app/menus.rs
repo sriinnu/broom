@@ -29,6 +29,7 @@ pub fn app_menus(rail_hidden: bool, cleanup_hidden: bool) -> Vec<Menu> {
         menu("File", vec![
             MenuItem::action("Open Folder…", OpenFolder),
             MenuItem::action("Rescan", Rescan),
+            MenuItem::action("Full Rescan", FullRescan),
             MenuItem::separator(),
             MenuItem::action("Close Window", CloseWindow),
             MenuItem::separator(),
@@ -74,6 +75,9 @@ pub fn handle_app_menu_actions(cx: &mut App) {
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
     cx.on_action(|_: &BringAllToFront, cx| cx.activate(true));
     cx.on_action(|_: &OpenHelp, cx| cx.open_url(&format!("{REPO_URL}#readme")));
+    // Settings is its own window, so ⌘, works from the main window, from
+    // Settings itself, and with no window open at all.
+    cx.on_action(|_: &OpenSettings, cx| open_settings_window(cx));
 }
 
 impl Broom {

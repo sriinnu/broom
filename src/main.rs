@@ -1,19 +1,23 @@
 mod app;
 mod ask;
 mod panel;
+mod cache;
 mod classify;
 mod clock;
 mod comic;
+mod delight;
 mod dirlist;
 mod duplicates;
 mod disk;
 mod eta;
 mod findings;
+mod fsevents;
 mod history;
 mod live;
 mod menubar;
 mod motion;
 mod onboarding;
+mod refresh;
 mod scan;
 mod secrets;
 mod settings;
@@ -30,7 +34,7 @@ use std::path::PathBuf;
 use gpui::{App, KeyBinding};
 
 use app::{
-    CloseAbout, CloseReview, CloseSettings, DismissQuery, FocusQuery, GoUp, GoBack, GoForward, ToggleRail, ToggleCleanup, SelectAll, OpenFolder, OpenSelected, OpenSettings, Rescan,
+    CloseAbout, CloseReview, CloseSettings, DismissQuery, FocusQuery, GoUp, GoBack, GoForward, ToggleRail, ToggleCleanup, SelectAll, OpenFolder, OpenSelected, OpenSettings, Rescan, FullRescan,
     SelectNext, SelectPrev, StartOver, SubmitQuery, ToggleStaged, CopyPath, CopyRelativePath,
     SortBySize, SortByName, SortByModified, Quit, HideApp, HideOthers, CloseWindow, Minimize,
 };
@@ -48,6 +52,13 @@ fn main() {
         let path = PathBuf::from(args.get(2).expect("path required"));
         let runs = args.get(3).and_then(|r| r.parse().ok()).unwrap_or(5);
         scan::bench(&path, runs);
+        return;
+    }
+    // Headless: full scan vs cache load vs FSEvents catch-up, `broom --bench-catchup <path> [runs]`.
+    if args.get(1).map(String::as_str) == Some("--bench-catchup") {
+        let path = PathBuf::from(args.get(2).expect("path required"));
+        let runs = args.get(3).and_then(|r| r.parse().ok()).unwrap_or(3);
+        refresh::bench(&path, runs);
         return;
     }
     // Diagnostic: does this process have Full Disk Access? (Launch through `open` to ask
@@ -88,6 +99,7 @@ fn main() {
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-o", OpenFolder, None),
             KeyBinding::new("cmd-r", Rescan, None),
+            KeyBinding::new("cmd-shift-r", FullRescan, None),
             KeyBinding::new("cmd-up", GoUp, None),
             KeyBinding::new("backspace", GoUp, Some("Broom && !EditableText")),
             KeyBinding::new("escape", GoUp, None),

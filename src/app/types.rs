@@ -101,26 +101,31 @@ pub(super) struct ContextMenu {
     pub(super) at: Point<Pixels>,
 }
 
-/// Which tab of the settings panel is in front.
+/// Which tab of the Help / About card is in front.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum PanelTab {
-    /// API keys, kept in the keychain.
-    Keys,
     /// A short FAQ.
     Help,
     /// Version and credits.
     About,
 }
 
-/// The one modal card Broom has: Settings / Help / About. The key rows ride
-/// along whichever tab is in front, so switching tabs needs no reload. The
+/// The one modal card Broom has: Help / About. Settings is not in it: the
+/// Human Interface Guidelines give Settings a window of its own, which
+/// leaves the main window usable while it's open (see `SettingsPane`). The
 /// card is a fixed height; the tab's content scrolls in a viewport of its
 /// own, with a scrollbar painted into the card.
 pub(super) struct PanelState {
     pub(super) tab: PanelTab,
-    pub(super) settings: SettingsState,
-    /// Drives the panel's scroll area. The scrollbar reads it (offset,
-    /// viewport) and drags write to it.
+    pub(super) scroller: Scroller,
+}
+
+/// A scroll area with Broom's own scrollbar, shared by the card and the
+/// Settings window.
+#[derive(Default)]
+pub(super) struct Scroller {
+    /// Drives the scroll area. The scrollbar reads it (offset, viewport) and
+    /// drags write to it.
     pub(super) scroll: ScrollHandle,
     /// Where the scrolled content starts and stops, in window coordinates,
     /// written by zero-height canvases at its ends. Their difference is the
@@ -131,6 +136,16 @@ pub(super) struct PanelState {
     /// A thumb drag in flight: y at press, scroll offset at press. `None`
     /// when the thumb isn't held.
     pub(super) drag: Rc<Cell<Option<(f32, f32)>>>,
+}
+
+/// The Settings window's state, held by Broom while that window is open so
+/// the keychain work in `api_keys` keeps landing where it always has.
+pub(super) struct SettingsPane {
+    pub(super) settings: SettingsState,
+    pub(super) scroller: Scroller,
+    /// The window showing it; `None` only between creating the state and the
+    /// window opening.
+    pub(super) window: Option<WindowHandle<SettingsWindow>>,
 }
 
 /// Settings lives as long as it's open; keychain work happens in the background and
@@ -144,6 +159,10 @@ pub(super) struct SettingsState {
     pub(super) exclude_input: Entity<EditableTextState>,
     pub(super) note: Option<SharedString>,
     pub(super) note_epoch: u64,
+    /// Where a damaged settings file was moved at startup, said once: taken
+    /// from Broom when this Settings session opens, so it shows for the
+    /// whole session and never again.
+    pub(super) salvaged: Option<PathBuf>,
 }
 
 pub(super) struct KeyRow {

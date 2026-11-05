@@ -172,12 +172,15 @@ the Trash, the banner has a **Put back** button for a few seconds.
 | / | Search or ask |
 | ⌘1 ⌘2 ⌘3 | Sort by size, name, date modified (again to flip) |
 | ⌘[ ⌘] | Back and forward through the folders you've visited |
-| ⌥⌘S | Hide or show the sidebar |
+| ⌃⌘S (or ⌥⌘S) | Hide or show the sidebar |
+| ⌥⌘0 | Hide or show the findings and cleanup column |
 | ⇧-click, ⌘- or ⌃-click, ⌘A | Pick a range of rows, add or remove one, or take them all; space and ⌘C act on all of them, esc lets go |
 | ⌘O | Choose a folder to scan |
-| ⌘R | Rescan |
+| ⌘R | Rescan: re-reads only the folders macOS says changed since the last scan |
+| ⇧⌘R | Full rescan, reading everything again |
 | ⇧⌘D | Back to the Disks screen |
-| ⌘, | Settings |
+| ⌘, | Settings, in its own window |
+| ⌘W, ⌘M, ⌘H | Close (Broom stays in the menu bar), minimize, hide |
 | ⌘Q | Quit |
 
 You can also pass a folder on the command line: `broom ~/Library`. Broom runs as one instance: a
@@ -226,6 +229,11 @@ src/
 ├── trashcan.rs    the drop (folders tumbling into the bin) and the Finder-then-NSFileManager move
 ├── single.rs      one Broom at a time: a Unix socket in the state folder hands a second launch over
 ├── scan.rs        parallel walk (outline → hotspots → depth-first), the flat Tree, names index, frees_of
+├── scan/catchup.rs bringing a kept tree up to date from the folders that changed
+├── cache.rs       the last scan of each root, kept on disk so a relaunch shows it at once
+├── fsevents.rs    which folders changed since a given moment, from macOS's FSEvents history
+├── refresh.rs     full scan or catch-up, and storing the result
+├── delight.rs     the swept count, real-world comparisons, scanning asides, Reduce Motion
 ├── dirlist.rs     getattrlistbulk/openat directory listing, with a portable fallback
 ├── live.rs        live per-folder totals during a scan, snapshots
 ├── disk.rs        the startup disk's APFS container: exact slices for the other volumes
@@ -246,10 +254,13 @@ src/
    exact within a couple of seconds even on a full disk.
 3. **Main walk.** Everything else, depth-first across all cores. Folders in the top levels keep
    atomic running totals the UI snapshots ten times a second.
-4. **Results.** The finished tree is a flat array of nodes with a lowercase name index, which is
+4. **Kept.** A scan that took more than a second and a half is kept on disk with the FSEvents
+   id from when it began. The next launch shows it at once, labelled with its age, and catches up by
+   re-reading only the folders macOS logged as changed; anything it can't vouch for gets a full scan.
+5. **Results.** The finished tree is a flat array of nodes with a lowercase name index, which is
    what makes a panel query over two million nodes answer in well under a second. Findings resolve
    their exact savings afterwards, one at a time on a small pool so they never starve the UI.
-5. **Ask.** A query becomes tokens (stop words in English and Telugu dropped, phrases normalised),
+6. **Ask.** A query becomes tokens (stop words in English and Telugu dropped, phrases normalised),
    then groups: findings by alias, folder words from a table that knows which names need a manifest
    next to them to count as safe, extensions, worktrees (a folder whose `.git` is a file), glob
    patterns and kinds. Overlapping groups collapse to the most precise. If a reader is configured,

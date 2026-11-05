@@ -184,7 +184,8 @@ pub(super) fn reopen(cx: &mut App) {
     if std::env::var_os("BROOM_MB_DEBUG").is_some() {
         eprintln!("menubar: reopen, windows: {}", cx.windows().len());
     }
-    if cx.windows().is_empty() {
+    // The main window, not any window: Settings can be open on its own.
+    if !cx.windows().iter().any(|w| w.downcast::<Broom>().is_some()) {
         if let Some(broom) = BROOM_ENTITY.get().cloned() {
             let _ = cx.open_window(window_options(cx), |window, cx| {
                 // The new window needs the frost tuned like the first one;

@@ -204,14 +204,57 @@ pub fn install(window: &mut Window, cx: &mut Context<Broom>) {
                     })
                     .ok();
                 }
-                // `settings`: open the Settings card.
+                // `settings`: open the Settings window. It's a window of its own,
+                // so `settings-shot name` captures it, `settings-click x y` and
+                // `settings-key k` act in it, and `shot` still means the main one.
                 "settings" => {
-                    cx.update(|window, cx| {
-                        if let Some(broom) = crate::app::broom() {
-                            broom.update(cx, |b, cx| b.open_settings(&crate::app::OpenSettings, window, cx));
+                    cx.update(|_, cx| crate::app::open_settings_window(cx)).ok();
+                }
+                "settings-shot" => {
+                    let path = format!("{prefix}-{}.png", parts.get(1).unwrap_or(&"settings"));
+                    cx.update(|_, cx| match crate::app::capture_settings_window(cx) {
+                        Some(Ok(image)) => {
+                            image.save(&path).ok();
+                            eprintln!("snapshot: wrote {path}");
                         }
+                        Some(Err(error)) => eprintln!("snapshot: settings {error:#}"),
+                        None => eprintln!("snapshot: no settings window"),
                     })
                     .ok();
+                }
+                "settings-click" => {
+                    let position = point(px(num(1)), px(num(2)));
+                    cx.update(|_, cx| {
+                        crate::app::with_settings_window(cx, |window, cx| {
+                            move_to(window, cx, position);
+                            click(window, cx, position);
+                        })
+                    })
+                    .ok();
+                }
+                // `settings-scroll x y dy`: a wheel turn of `dy` points over (x, y).
+                "settings-scroll" => {
+                    let position = point(px(num(1)), px(num(2)));
+                    let delta = gpui::ScrollDelta::Pixels(point(px(0.), px(num(3))));
+                    cx.update(|_, cx| {
+                        crate::app::with_settings_window(cx, |window, cx| {
+                            move_to(window, cx, position);
+                            window.dispatch_event(
+                                PlatformInput::ScrollWheel(gpui::ScrollWheelEvent { position, delta, ..Default::default() }),
+                                cx,
+                            );
+                        })
+                    })
+                    .ok();
+                }
+                "settings-key" => {
+                    if let Some(Ok(keystroke)) = parts.get(1).map(|k| gpui::Keystroke::parse(k)) {
+                        cx.update(|_, cx| crate::app::with_settings_window(cx, |window, cx| { window.dispatch_keystroke(keystroke, cx); })).ok();
+                    }
+                }
+                // `windows`: log how many windows are open, for checks that one closed.
+                "windows" => {
+                    cx.update(|_, cx| eprintln!("snapshot: windows open: {}", cx.windows().len())).ok();
                 }
                 "quit" => {
                     cx.update(|_, cx| cx.quit()).ok();

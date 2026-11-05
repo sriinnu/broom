@@ -61,6 +61,8 @@ pub(super) fn color_toggle(current: ColorBy, cx: &mut Context<Broom>) -> impl In
         .items_center()
         .gap_0p5()
         .p_0p5()
+        // The toolbar's one height, so the bar's controls line up.
+        .h(px(28.))
         .rounded(theme::radius(8.))
         .border_1()
         .border_color(rgb(colors().border))
@@ -188,6 +190,11 @@ impl Broom {
         let segments = r.segments.clone();
         let bounds_cell = r.chart_bounds.clone();
         let anim_start = r.anim_start;
+        // Reduce Motion: the chart appears whole, with no sweep and no dust.
+        let still = delight::reduce_motion();
+        let dust = r.dust.clone().filter(|_| !still);
+        // The freed number counts up for a moment; keep frames coming until it lands.
+        let counting = !still && r.freed.is_some() && r.banner.is_some_and(|at| clock::since(at) < delight::COUNT_UP);
         let entity = cx.entity().downgrade();
         // Staged slices (themselves or through a parent) get the hatch.
         let staged: Vec<bool> = segments
@@ -219,7 +226,7 @@ impl Broom {
                     },
                     move |bounds, hitbox, window, cx| {
                         let geometry = Geometry::new(bounds);
-                        let t = (clock::since(anim_start).as_secs_f32() / ZOOM_DURATION.as_secs_f32()).min(1.0);
+                        let t = if still { 1.0 } else { (clock::since(anim_start).as_secs_f32() / ZOOM_DURATION.as_secs_f32()).min(1.0) };
                         let eased = 1.0 - (1.0 - t).powi(3);
                         if t < 1.0 {
                             window.request_animation_frame();
@@ -249,6 +256,12 @@ impl Broom {
                         }
                         let center = if center_hovered { to_hsla(colors().chart_center_hover) } else { to_hsla(colors().chart_center) };
                         geometry.paint_disc(window, geometry.inner_radius - 1.0, center);
+                        if let Some(puff) = &dust {
+                            paint_dust(window, &geometry, puff);
+                        }
+                        if counting {
+                            window.request_animation_frame();
+                        }
 
                         if pointer {
                             window.set_cursor_style(CursorStyle::PointingHand, &hitbox);
@@ -338,6 +351,9 @@ impl Broom {
                 } else {
                     String::new()
                 };
+                if let Some(freed) = &r.freed {
+                    return d.child(render_freed_banner(r, freed, still, cx).into_any_element());
+                }
                 let (headline, detail) = match &r.banner_text {
                     // A line break splits the bold part from the quiet detail.
                     Some(text) => match text.split_once('\n') {
@@ -369,7 +385,7 @@ impl Broom {
                             .when(!detail.is_empty(), |d| d.child(div().min_w_0().truncate().text_xs().text_color(rgb(colors().muted)).child(detail)))
                             .when(!r.last_trashed.is_empty(), |d| {
                                 d.child(
-                                    button("put-back", "Put back")
+                                    button("put-back", "Put Back")
                                         .flex_none()
                                         .text_xs()
                                         .py_0p5()
@@ -390,4 +406,102 @@ impl Broom {
                 )
             })
     }
+}
+
+/// The dust lifting off where trashed slices were: specks drift outward and up,
+/// shrinking and fading, gone within `delight::DUST`.
+fn paint_dust(window: &mut Window, geometry: &Geometry, puff: &delight::Puff) {
+    let k = clock::since(puff.start).as_secs_f32() / delight::DUST.as_secs_f32();
+    if k >= 1.0 {
+        return;
+    }
+    // The investigator's dust, so the two read as the same broom.
+    let mut color = to_hsla(delight::DUST_COLOR);
+    for speck in &puff.specks {
+        let ring = geometry.rings[speck.depth.clamp(1, sunburst::MAX_DEPTH) - 1];
+        let (x, y, size, alpha) = delight::speck_at(speck, ring, k);
+        color.alpha = alpha;
+        let at = point(geometry.center.x + px(x), geometry.center.y + px(y));
+        Geometry::ring(at, 0.0, size).paint_disc(window, size, color);
+    }
+    window.request_animation_frame();
+}
+
+/// The banner after a move to the Trash: the freed size counting up, what
+/// it's worth in everyday things, the one useful reminder, and a word when the
+/// lifetime tally passes a milestone.
+fn render_freed_banner(r: &Results, freed: &Freed, still: bool, cx: &mut Context<Broom>) -> impl IntoElement {
+    let elapsed = r.banner.map(clock::since).unwrap_or(delight::COUNT_UP);
+    let shown = if still { freed.bytes } else { delight::counted(freed.bytes, elapsed) };
+    // Only the digits are monospaced; the unit reads with the sentence.
+    let counter = delight::format_like(shown, freed.bytes);
+    let (number, unit) = counter.rsplit_once(' ').map(|(n, u)| (n.to_string(), u.to_string())).unwrap_or((counter.clone(), String::new()));
+    let what = if freed.items == 1 { "1 item".to_string() } else { format!("{} items", format_count(freed.items as u64)) };
+    let detail = match delight::comparison(freed.bytes) {
+        Some(like) => format!("{what}, {like}. Empty the Trash to get the space back."),
+        None => format!("{what}. Empty the Trash to get the space back."),
+    };
+    div().absolute().top_4().left_0().right_0().px_4().flex().justify_center().child(
+        div()
+            .id("done-banner")
+            .occlude()
+            .max_w_full()
+            .min_w_0()
+            .px_4()
+            .py_2()
+            .rounded(theme::radius(14.))
+            .bg(rgb(colors().card))
+            .border_1()
+            .border_color(rgb(colors().safe))
+            .shadow_lg()
+            .flex()
+            .items_start()
+            .gap_2()
+            .cursor_pointer()
+            .child(div().flex_none().text_color(rgb(colors().safe)).font_weight(FontWeight::BOLD).child("✓"))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .flex()
+                            .items_baseline()
+                            .gap_1()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Swept")
+                            // Monospaced and padded to its final width, so the
+                            // banner doesn't jiggle while the number climbs.
+                            .child(div().flex_none().font_family(theme::current().mono).child(number))
+                            .child(format!("{unit} into the Trash")),
+                    )
+                    .child(div().text_xs().text_color(rgb(colors().muted)).child(detail))
+                    .when_some(freed.milestone, |d, m| {
+                        d.child(div().text_xs().font_weight(FontWeight::MEDIUM).text_color(rgb(colors().safe)).child(delight::milestone_line(m)))
+                    }),
+            )
+            .when(!r.last_trashed.is_empty(), |d| {
+                d.child(
+                    button("put-back", "Put back")
+                        .flex_none()
+                        .text_xs()
+                        .py_0p5()
+                        .px_2()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.put_back(cx);
+                        })),
+                )
+            })
+            .on_click(cx.listener(|this, _, _, cx| {
+                if let Some(r) = this.results() {
+                    r.banner = None;
+                    r.freed = None;
+                    cx.notify();
+                }
+            })),
+    )
 }

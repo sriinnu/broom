@@ -5,7 +5,7 @@ use super::*;
 impl Broom {
     /// A transient one-line status inside Settings ("saved", "couldn't…").
     pub(super) fn set_note(&mut self, text: impl Into<SharedString>) {
-        if let Some(p) = &mut self.modal {
+        if let Some(p) = &mut self.prefs {
             p.settings.note = Some(text.into());
         }
     }
@@ -14,8 +14,8 @@ impl Broom {
     /// The epoch drops results from a Settings session that has since closed and
     /// been reopened.
     pub(super) fn refresh_key_row(&mut self, ix: usize, cx: &mut Context<Self>) {
-        let Some(service) = self.modal.as_ref().and_then(|p| p.settings.rows.get(ix).map(|r| r.service.to_string())) else { return };
-        if let Some(row) = self.modal.as_mut().and_then(|p| p.settings.rows.get_mut(ix)) {
+        let Some(service) = self.prefs.as_ref().and_then(|p| p.settings.rows.get(ix).map(|r| r.service.to_string())) else { return };
+        if let Some(row) = self.prefs.as_mut().and_then(|p| p.settings.rows.get_mut(ix)) {
             row.status = KeyStatus::Loading;
         }
         let epoch = self.settings_epoch;
@@ -25,7 +25,7 @@ impl Broom {
                 if this.settings_epoch != epoch {
                     return;
                 }
-                if let Some(row) = this.modal.as_mut().and_then(|p| p.settings.rows.get_mut(ix)) {
+                if let Some(row) = this.prefs.as_mut().and_then(|p| p.settings.rows.get_mut(ix)) {
                     row.status = KeyStatus::of(key);
                 }
                 cx.notify();
@@ -37,7 +37,7 @@ impl Broom {
 
     /// Arm a row for pasting: the next clipboard paste goes straight to the keychain.
     pub(super) fn edit_key(&mut self, ix: usize, cx: &mut Context<Self>) {
-        if let Some(row) = self.modal.as_mut().and_then(|p| p.settings.rows.get_mut(ix)) {
+        if let Some(row) = self.prefs.as_mut().and_then(|p| p.settings.rows.get_mut(ix)) {
             if matches!(row.status, KeyStatus::Missing | KeyStatus::Set { .. }) {
                 row.status = KeyStatus::Editing;
             }
@@ -49,7 +49,7 @@ impl Broom {
     /// rendered: the value goes from the pasteboard into the keychain directly,
     /// never through a visible field.
     pub(super) fn paste_key(&mut self, ix: usize, cx: &mut Context<Self>) {
-        let service = match &self.modal {
+        let service = match &self.prefs {
             Some(p) => match p.settings.rows.get(ix).map(|r| (r.service.to_string(), &r.status)) {
                 Some((service, KeyStatus::Editing)) => service,
                 _ => return,
@@ -72,7 +72,7 @@ impl Broom {
     /// `Saving` so its buttons can't fire again mid-write. Errors carry status
     /// text only, never key material.
     pub(super) fn store_key(&mut self, ix: usize, service: &str, secret: String, cx: &mut Context<Self>) {
-        if let Some(row) = self.modal.as_mut().and_then(|p| p.settings.rows.get_mut(ix)) {
+        if let Some(row) = self.prefs.as_mut().and_then(|p| p.settings.rows.get_mut(ix)) {
             row.status = KeyStatus::Saving;
         }
         self.set_note("saving to the keychain\u{2026}");
@@ -105,8 +105,8 @@ impl Broom {
 
     /// Remove a service's value from the keychain.
     pub(super) fn remove_key(&mut self, ix: usize, cx: &mut Context<Self>) {
-        let Some(service) = self.modal.as_ref().and_then(|p| p.settings.rows.get(ix).map(|r| r.service.to_string())) else { return };
-        if let Some(row) = self.modal.as_mut().and_then(|p| p.settings.rows.get_mut(ix)) {
+        let Some(service) = self.prefs.as_ref().and_then(|p| p.settings.rows.get(ix).map(|r| r.service.to_string())) else { return };
+        if let Some(row) = self.prefs.as_mut().and_then(|p| p.settings.rows.get_mut(ix)) {
             row.status = KeyStatus::Saving;
         }
         self.set_note("removing\u{2026}");
@@ -135,7 +135,7 @@ impl Broom {
     /// note is epoch-tagged so a slow read for an older name can't overwrite the
     /// answer to the one the user just asked about.
     pub(super) fn add_custom_key(&mut self, cx: &mut Context<Self>) {
-        let service = match &self.modal {
+        let service = match &self.prefs {
             Some(p) => p.settings.custom.read(cx).as_str().trim().to_string(),
             None => return,
         };
@@ -143,7 +143,7 @@ impl Broom {
             self.set_note("type a key name first");
             return;
         }
-        let note_epoch = match &mut self.modal {
+        let note_epoch = match &mut self.prefs {
             Some(p) => {
                 let s = &mut p.settings;
                 if s.rows.iter().any(|r| r.service.as_ref() == service) {
@@ -163,7 +163,7 @@ impl Broom {
             }
             None => return,
         };
-        let ix = match &self.modal {
+        let ix = match &self.prefs {
             Some(p) => p.settings.rows.len() - 1,
             None => return,
         };
@@ -175,7 +175,7 @@ impl Broom {
                 if this.settings_epoch != epoch {
                     return;
                 }
-                if let Some(p) = &mut this.modal {
+                if let Some(p) = &mut this.prefs {
                     let s = &mut p.settings;
                     if s.note_epoch == note_epoch {
                         s.note = Some(match &key {

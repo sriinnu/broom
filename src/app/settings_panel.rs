@@ -1,9 +1,10 @@
-//! What the Settings card shows.
+//! What the Settings window shows.
 
 use super::*;
 
 impl Broom {
-    pub(super) fn render_settings(&self, s: &SettingsState, cx: &mut Context<Self>) -> impl IntoElement {
+    /// `window` is the Settings window, asked only which field has focus.
+    pub(super) fn render_settings(&self, s: &SettingsState, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut card = div()
             .id("settings-card")
             .flex()
@@ -11,8 +12,8 @@ impl Broom {
             .gap_3();
 
         // Salvaged-files notice: shown once if the last session's settings
-        // were damaged and moved aside. Cleared on the open that shows it.
-        if let Some(ref salvaged) = self.settings_salvaged {
+        // were damaged and moved aside. Handed to this session when it opened.
+        if let Some(ref salvaged) = s.salvaged {
             card = card.child(
                 div()
                     .px_3()
@@ -32,7 +33,6 @@ impl Broom {
                     ),
             );
         }
-        // Cleared in open_panel so it doesn't reappear on subsequent opens.
 
         // --- General -----------------------------------------------------------
         card = card
@@ -418,7 +418,7 @@ impl Broom {
                                     .min_h_auto()
                                     .rounded(theme::radius(6.))
                                     .border_1()
-                                    .border_color(rgb(colors().border))
+                                    .border_color(field_border(&s.exclude_input, window, cx))
                                     .bg(rgb(colors().bg))
                                     .text_size(px(12.))
                                     // One line as tall as the field inside its border: the element draws
@@ -428,7 +428,7 @@ impl Broom {
                     )
                     .child(
                         button("exclude-add", "Add").on_click(cx.listener(|this, _, _, cx| {
-                            let text = this.modal.as_ref().and_then(|p| {
+                            let text = this.prefs.as_ref().and_then(|p| {
                                 let input = p.settings.exclude_input.read(cx);
                                 let text = input.as_str();
                                 if text.trim().is_empty() { None } else { Some(text.to_string()) }
@@ -438,7 +438,7 @@ impl Broom {
                                     this.settings.excludes.push(path);
                                     let _ = settings::save(&this.settings);
                                 }
-                                if let Some(p) = &mut this.modal {
+                                if let Some(p) = &mut this.prefs {
                                     p.settings.exclude_input.update(cx, |input, cx| input.emplace("", cx));
                                 }
                                 cx.notify();
@@ -495,7 +495,7 @@ impl Broom {
                                     .min_h_auto()
                                     .rounded(theme::radius(6.))
                                     .border_1()
-                                    .border_color(rgb(colors().border))
+                                    .border_color(field_border(&s.custom, window, cx))
                                     .bg(rgb(colors().bg))
                                     .text_size(px(12.))
                                     // One line as tall as the field inside its border: the element draws

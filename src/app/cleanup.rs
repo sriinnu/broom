@@ -106,15 +106,41 @@ impl Broom {
                 this.review = None;
                 match result {
                     Ok(()) => {
+                        // Where the trashed things sit on the chart, read before
+                        // they leave the tree, so dust can lift off those spots.
+                        let specks = this
+                            .results()
+                            .map(|r| {
+                                let gone = |n: usize| items.iter().any(|&ix| r.tree.is_ancestor_or_self(ix, n));
+                                let slices: Vec<(f32, f32, usize)> = r
+                                    .segments
+                                    .iter()
+                                    .filter(|s| match s.target {
+                                        Target::Node(n) => gone(n),
+                                        Target::Small { parent } => gone(parent),
+                                    })
+                                    .map(|s| (s.start, s.end, s.depth))
+                                    .collect();
+                                delight::specks(&slices)
+                            })
+                            .unwrap_or_default();
                         this.remove_trashed(&items, cx);
+                        let milestone = delight::record_sweep(freed);
                         let what = if items.len() == 1 { "1 item".to_string() } else { format!("{} items", items.len()) };
+                        // The plain text stays as the fallback (and for anything
+                        // reading `banner_text`); `freed` drives the richer banner.
                         this.show_banner(
                             Some(format!("Moved {what} ({}) to the Trash\nEmpty the Trash to get the space back", format_size(freed))),
                             cx,
                         );
                         if let Some(r) = this.results() {
                             r.last_trashed = landed;
+                            r.freed = Some(Freed { bytes: freed, items: items.len(), milestone });
+                            r.dust = (!specks.is_empty() && !delight::reduce_motion())
+                                .then(|| Rc::new(delight::Puff { start: clock::now(), specks }));
                         }
+                        // A firmer tap than staging: the cleanup is done.
+                        cx.play_haptic_feedback(HapticFeedbackStyle::LevelChange);
                     }
                     Err(error) => {
                         // Not atomic: whatever did go should leave the tree too.
@@ -138,6 +164,7 @@ impl Broom {
         if let Some(r) = self.results() {
             if r.stageable(ix) {
                 r.toggle_staged(ix);
+                stage_tap(cx);
             }
         }
         self.collector_changed(cx);
@@ -148,6 +175,7 @@ impl Broom {
     pub(super) fn click_group_tick(&mut self, nodes: &[usize], cx: &mut Context<Self>) {
         if let Some(r) = self.results() {
             r.toggle_group(nodes);
+            stage_tap(cx);
         }
         self.collector_changed(cx);
         cx.notify();
@@ -156,6 +184,7 @@ impl Broom {
     pub(super) fn unstage(&mut self, ix: usize, cx: &mut Context<Self>) {
         if let Some(r) = self.results() {
             r.collector.retain(|&c| c != ix);
+            stage_tap(cx);
         }
         self.collector_changed(cx);
         cx.notify();
@@ -287,7 +316,7 @@ impl Broom {
             format!("{} safe", format_size(safe))
         } else if findings.is_empty() {
             match results {
-                Some(_) => "nothing of note".to_string(),
+                Some(_) => "nothing piling up, all tidy".to_string(),
                 None => "appear as the scan runs".to_string(),
             }
         } else {
@@ -615,4 +644,11 @@ impl Broom {
             )
             .into_any_element()
     }
+}
+
+/// The lightest trackpad tick, as a box is ticked or unticked by a click. Only
+/// felt with a finger on a Force Touch trackpad, which a click guarantees; the
+/// keyboard path stays silent, as macOS's own controls do.
+fn stage_tap(cx: &App) {
+    cx.play_haptic_feedback(HapticFeedbackStyle::Alignment);
 }

@@ -415,6 +415,57 @@ mod history_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A refresh swaps in a new tree with new node numbers. The user's place goes
+    /// across by path: the focused folder, the trail, the cursor, the picking and
+    /// the plan; what was deleted in between is dropped, and a focus inside a
+    /// deleted folder lands on the nearest folder above it that's still there.
+    #[test]
+    fn a_refresh_keeps_the_users_place() {
+        let root = std::env::temp_dir().join(format!("broom-refresh-carry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let tree = tree_with_nested(&root);
+        let a = child_of(&tree, Tree::ROOT, "a");
+        let inner = child_of(&tree, a, "inner");
+        let b = child_of(&tree, Tree::ROOT, "b");
+        let two = child_of(&tree, a, "two.bin");
+        let mut old = Results::new(tree.clone(), Vec::new(), Duration::ZERO, root.clone(), ColorBy::Folder, SortBy::Size, true, false);
+        old.navigate(b);
+        old.navigate(a);
+        old.selected = Some(two);
+        old.picked = [two, inner].into_iter().collect();
+        old.collect(inner);
+        old.collect(b);
+
+        // On disk meanwhile: b goes, a new folder sorts first, so every number shifts.
+        std::fs::remove_dir_all(root.join("b")).unwrap();
+        std::fs::create_dir_all(root.join("aaa")).unwrap();
+        std::fs::write(root.join("aaa/new.bin"), vec![1u8; 1 << 20]).unwrap();
+        let fresh = scan::scan(&root, &scan::Progress::default(), &[], settings::Settings::default().outline_depth);
+        let mut new = Results::new(fresh, Vec::new(), Duration::ZERO, root.clone(), ColorBy::Folder, SortBy::Size, true, false);
+        new.carry_over_from(&old);
+
+        let path = |r: &Results, ix: usize| r.tree.path_of(ix);
+        assert_ne!(new.tree.find(&root.join("a")), Some(a), "the numbers did change");
+        assert_eq!(path(&new, new.focus), root.join("a"));
+        assert_eq!(new.back.iter().map(|&ix| path(&new, ix)).collect::<Vec<_>>(), vec![root.clone()], "b left the trail");
+        assert_eq!(new.selected.map(|ix| path(&new, ix)), Some(root.join("a/two.bin")));
+        let mut picked: Vec<PathBuf> = new.picked.iter().map(|&ix| path(&new, ix)).collect();
+        picked.sort();
+        assert_eq!(picked, vec![root.join("a/inner"), root.join("a/two.bin")]);
+        assert_eq!(new.collector.iter().map(|&ix| path(&new, ix)).collect::<Vec<_>>(), vec![root.join("a/inner")], "b left the plan");
+        assert_eq!(new.order, new.tree.nodes[new.focus].children, "the list shows the carried focus");
+
+        // Standing inside something that's gone: up to what's left.
+        let mut deep = Results::new(new.tree.as_ref().clone(), Vec::new(), Duration::ZERO, root.clone(), ColorBy::Folder, SortBy::Size, true, false);
+        deep.navigate(new.tree.find(&root.join("a/inner")).unwrap());
+        std::fs::remove_dir_all(root.join("a/inner")).unwrap();
+        let fresh = scan::scan(&root, &scan::Progress::default(), &[], settings::Settings::default().outline_depth);
+        let mut after = Results::new(fresh, Vec::new(), Duration::ZERO, root.clone(), ColorBy::Folder, SortBy::Size, true, false);
+        after.carry_over_from(&deep);
+        assert_eq!(after.tree.path_of(after.focus), root.join("a"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Stepping back out of a folder lights the row you came from, as going Up
     /// does, and leaves any picking behind.
     #[test]

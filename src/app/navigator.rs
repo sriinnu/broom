@@ -100,7 +100,7 @@ impl Broom {
                 })),
             ),
             _ => actions
-                .child(button("access-later", "Not now").on_click(cx.listener(|this, _, _, cx| {
+                .child(button("access-later", "Not Now").on_click(cx.listener(|this, _, _, cx| {
                     this.access = Access::Dismissed;
                     cx.notify();
                 })))
@@ -189,7 +189,9 @@ impl Broom {
                     .text_center()
                     .text_color(rgb(colors().muted))
                     .child("Choose a disk or folder on the left. The chart fills in live while the scan runs; findings and the cleanup plan land on the right."),
-            );
+            )
+            // The lifetime tally, once there is one: a quiet note, not a score.
+            .children(delight::tally().summary().map(|line| div().pt_1().text_xs().text_color(rgb(colors().faint)).child(format!("{line}."))));
         div().size_full().flex().child(nav).child(chart)
     }
 

@@ -15,6 +15,9 @@ use crate::findings;
 use crate::live::{LIVE_DEPTH, LiveNode};
 use rayon::prelude::*;
 
+mod catchup;
+pub use catchup::{CatchUp, Change};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Dir,
@@ -282,6 +285,11 @@ struct Walker<'a> {
     /// Read-only copy of the prescanned paths, so the main walk can check membership
     /// without taking a lock for every folder.
     prescanned_paths: HashSet<PathBuf>,
+    /// When re-walking part of an existing tree: the size the tree already gave the
+    /// file at this path. A hard-linked file was counted once, at whichever link the
+    /// first walk met first; a re-walk that can't see the other links keeps that
+    /// decision instead of counting the file again.
+    prior: Option<&'a (dyn Fn(&Path) -> Option<u64> + Sync)>,
 }
 
 /// Allocated size on disk, which is what actually frees up when a file is deleted.
@@ -399,8 +407,12 @@ impl Walker<'_> {
                 continue;
             }
             let mut size = entry.size;
-            if entry.nlink > 1 && !self.hardlinks.lock().unwrap().insert((entry.dev, entry.ino)) {
-                size = 0;
+            if entry.nlink > 1 {
+                if let Some(known) = self.prior.and_then(|prior| prior(&path.join(&entry.name))) {
+                    size = known;
+                } else if !self.hardlinks.lock().unwrap().insert((entry.dev, entry.ino)) {
+                    size = 0;
+                }
             }
             files += 1;
             bytes += size;
@@ -523,6 +535,22 @@ fn add_volume_slices(tree: &mut Tree, layout: &DiskLayout) {
     sort_children(&mut tree.nodes, Tree::ROOT);
 }
 
+/// A whole-disk tree caught up from FSEvents: its volume slices were measured
+/// when it was first scanned. Take them off and measure them again, so the
+/// total still matches what the disk reports as used.
+pub fn remeasure_volume_slices(tree: &mut Tree) -> bool {
+    let Some(layout) = disk::startup_layout(startup_disk_name()) else { return false };
+    if layout.data_root != tree.root_path {
+        return false;
+    }
+    let slices: Vec<usize> = tree.nodes[Tree::ROOT].children.iter().copied().filter(|&c| tree.nodes[c].kind == Kind::Other).collect();
+    for ix in slices {
+        tree.remove(ix);
+    }
+    add_volume_slices(tree, &layout);
+    true
+}
+
 /// Largest first, except the "not scanned / not readable" remainder, which always
 /// comes last so it reads as the tail of the ring.
 pub fn sort_children(nodes: &mut [Node], ix: usize) {
@@ -548,33 +576,42 @@ pub fn startup_disk_name() -> String {
 
 /// `bases` locate the hotspot folders (none: no hotspot pass).
 /// `skip_more` are user-chosen exclusions in addition to the system defaults.
-fn scan_with_bases(root: &Path, progress: &Progress, bases: &findings::Bases, skip_more: &[PathBuf], outline_depth: usize) -> Tree {
-    let root_meta = fs::symlink_metadata(root).ok();
-    let mut allowed_devices: HashSet<u64> = root_meta.iter().map(|m| m.dev()).collect();
-    let skip_builtin: [&str; 5] = ["/dev", "/Volumes", "/System/Volumes", "/net", "/home"];
-    let mut skip: HashSet<PathBuf> = skip_builtin
-        .into_iter()
-        .map(PathBuf::from)
-        .chain(skip_more.iter().cloned())
-        .collect();
-    skip.remove(root);
+impl<'a> Walker<'a> {
+    /// The walk's rules for `root`: which devices it stays on and which folders it
+    /// leaves out. Shared by the full scan and the catch-up after FSEvents, so a
+    /// folder read again follows exactly the rules it was first read by.
+    fn new(root: &Path, progress: &'a Progress, skip_more: &[PathBuf]) -> Self {
+        let mut allowed_devices: HashSet<u64> = fs::symlink_metadata(root).ok().iter().map(|m| m.dev()).collect();
+        let skip_builtin: [&str; 5] = ["/dev", "/Volumes", "/System/Volumes", "/net", "/home"];
+        let mut skip: HashSet<PathBuf> = skip_builtin
+            .into_iter()
+            .map(PathBuf::from)
+            .chain(skip_more.iter().cloned())
+            .collect();
+        skip.remove(root);
 
-    // On macOS, `/` is a sealed system volume whose user data lives on a separate
-    // APFS volume that is stitched in with firmlinks (e.g. /Users, /Applications).
-    if root == Path::new("/") {
-        if let Ok(data) = fs::metadata("/System/Volumes/Data") {
-            allowed_devices.insert(data.dev());
+        // On macOS, `/` is a sealed system volume whose user data lives on a separate
+        // APFS volume that is stitched in with firmlinks (e.g. /Users, /Applications).
+        if root == Path::new("/") {
+            if let Ok(data) = fs::metadata("/System/Volumes/Data") {
+                allowed_devices.insert(data.dev());
+            }
+        }
+        Walker {
+            progress,
+            allowed_devices,
+            skip,
+            hardlinks: Mutex::new(HashSet::new()),
+            prescanned: Mutex::new(HashMap::new()),
+            prescanned_paths: HashSet::new(),
+            prior: None,
         }
     }
+}
 
-    let mut walker = Walker {
-        progress,
-        allowed_devices,
-        skip,
-        hardlinks: Mutex::new(HashSet::new()),
-        prescanned: Mutex::new(HashMap::new()),
-        prescanned_paths: HashSet::new(),
-    };
+fn scan_with_bases(root: &Path, progress: &Progress, bases: &findings::Bases, skip_more: &[PathBuf], outline_depth: usize) -> Tree {
+    let root_meta = fs::symlink_metadata(root).ok();
+    let mut walker = Walker::new(root, progress, skip_more);
     let own = root_meta.as_ref().map(disk_size).unwrap_or(0);
     dirlist::raise_fd_limit();
     dirlist::disable_cloud_downloads();
@@ -1100,6 +1137,180 @@ mod tests {
         assert_eq!(tree.nodes[trash].size, 0);
         assert_eq!(tree.nodes[Tree::ROOT].size, total - (3 << 20));
         assert_eq!(tree.nodes[Tree::ROOT].children[0], tree.find(&dir.join("keep")).unwrap());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Every attached node as (path, kind, size, items), sorted by path: two trees of
+    /// the same disk compare equal whatever order their nodes were built in.
+    fn shape(tree: &Tree) -> Vec<(PathBuf, Kind, u64, u64)> {
+        let mut out = Vec::new();
+        let mut stack = vec![Tree::ROOT];
+        while let Some(ix) = stack.pop() {
+            let node = &tree.nodes[ix];
+            out.push((tree.path_of(ix), node.kind, node.size, node.items));
+            // Children stay largest first after any change.
+            assert!(node.children.windows(2).all(|w| tree.nodes[w[0]].size >= tree.nodes[w[1]].size), "{} out of order", tree.path_of(ix).display());
+            for &c in &node.children {
+                assert_eq!(tree.nodes[c].parent, Some(ix), "child links back");
+            }
+            stack.extend(node.children.iter().copied());
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    /// A folder with a bit of everything a real one has: nesting, an empty folder,
+    /// non-ASCII names, names shared between folders. Hard links have their own test:
+    /// which link a full scan counts depends on walk order.
+    fn sample(dir: &Path) {
+        let _ = fs::remove_dir_all(dir);
+        write(&dir.join("big/a.bin"), 1 << 20);
+        write(&dir.join("big/nested/b.bin"), 1 << 19);
+        write(&dir.join("big/nested/deeper/index.js"), 3000);
+        write(&dir.join("other/index.js"), 4000);
+        write(&dir.join("café/über.txt"), 700);
+        write(&dir.join("small.txt"), 10);
+        write(&dir.join("doomed/x/y.bin"), 50_000);
+        write(&dir.join("grows.log"), 1000);
+        write(&dir.join("becomes_dir"), 2000);
+        fs::create_dir_all(dir.join("empty")).unwrap();
+    }
+
+    /// (a) A tree written to the cache and read back is the same tree, node for
+    /// node: same indices, names, sizes, kinds, links and child order.
+    #[test]
+    fn cache_round_trip_is_identical() {
+        let dir = std::env::temp_dir().join(format!("broom-cache-rt-{}", std::process::id()));
+        sample(&dir);
+        let tree = scan(&dir, &Progress::default(), &[], OUTLINE_DEPTH);
+        let meta = crate::cache::Meta {
+            requested_root: dir.clone(),
+            taken: std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_750_000_000),
+            event_id: 42,
+            volume_uuid: "U".into(),
+            root_dev: 1,
+            root_ino: 2,
+            excludes: 3,
+        };
+        let file = dir.with_extension("tree");
+        crate::cache::save_at(&file, &meta, &tree).unwrap();
+        let (back_meta, back) = crate::cache::load_at(&file).unwrap();
+        assert_eq!(back_meta, meta);
+        assert_eq!(back.root_path, tree.root_path);
+        assert_eq!((back.errors, back.cloud_only), (tree.errors, tree.cloud_only));
+        assert_eq!(back.nodes.len(), tree.nodes.len());
+        for (ix, (a, b)) in tree.nodes.iter().zip(&back.nodes).enumerate() {
+            assert_eq!(
+                (&a.name, a.size, a.kind, a.parent, &a.children, a.items),
+                (&b.name, b.size, b.kind, b.parent, &b.children, b.items),
+                "node {ix}"
+            );
+        }
+
+        // After a removal the file holds only what's still attached, and reads back
+        // as the same tree by path.
+        let mut trimmed = tree.clone();
+        trimmed.remove(trimmed.find(&dir.join("big/nested")).unwrap());
+        crate::cache::save_at(&file, &meta, &trimmed).unwrap();
+        let (_, back) = crate::cache::load_at(&file).unwrap();
+        assert!(back.nodes.len() < trimmed.nodes.len());
+        assert_eq!(shape(&back), shape(&trimmed));
+        let _ = fs::remove_file(&file);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// (b) Catching a cached tree up from FSEvents after creating, deleting, growing,
+    /// renaming and retyping things gives exactly the tree a full scan gives.
+    #[test]
+    fn catch_up_matches_a_full_scan() {
+        let dir = std::env::temp_dir().join(format!("broom-catchup-{}", std::process::id()));
+        sample(&dir);
+        let (tree, meta) = crate::refresh::full_scan(&dir, &Progress::default(), &[], OUTLINE_DEPTH);
+        if meta.event_id == 0 {
+            eprintln!("skipped: no FSEvents history for the temp folder's volume");
+            fs::remove_dir_all(&dir).unwrap();
+            return;
+        }
+        let file = dir.with_extension("tree");
+        crate::cache::save_at(&file, &meta, &tree).unwrap();
+        let before = shape(&tree);
+
+        write(&dir.join("new.bin"), 300_000);
+        write(&dir.join("big/nested/deeper/new/fresh.dat"), 80_000);
+        fs::remove_file(dir.join("small.txt")).unwrap();
+        fs::remove_dir_all(dir.join("doomed")).unwrap();
+        fs::write(dir.join("grows.log"), vec![1u8; 900_000]).unwrap();
+        fs::rename(dir.join("café"), dir.join("renamed")).unwrap();
+        fs::remove_file(dir.join("becomes_dir")).unwrap();
+        write(&dir.join("becomes_dir/inside.bin"), 20_000);
+        write(&dir.join("empty/now_not.txt"), 5000);
+        // fseventsd hears of changes a moment after they happen.
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+
+        let (meta, cached) = crate::cache::load_at(&file).unwrap();
+        let fresh = crate::refresh::catch_up(&meta, cached, &[]).expect("catch-up");
+        let crate::refresh::How::CaughtUp { changes, .. } = fresh.how else { panic!("not a catch-up") };
+        assert!(changes > 0, "FSEvents reported the changes");
+        eprintln!("catch-up: {changes} changed folders");
+        let full = scan(&dir, &Progress::default(), &[], OUTLINE_DEPTH);
+        let (caught, truth) = (shape(&fresh.tree), shape(&full));
+        assert_ne!(truth, before, "the changes changed the tree");
+        assert_eq!(caught, truth);
+        // The ancestors' totals are the folders' own, not just the same sum.
+        assert_eq!(fresh.tree.nodes[Tree::ROOT].size, full.nodes[Tree::ROOT].size);
+        assert_eq!(fresh.tree.nodes[Tree::ROOT].items, full.nodes[Tree::ROOT].items);
+        assert!(fresh.meta.event_id >= meta.event_id);
+        let _ = fs::remove_file(&file);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The catch-up itself, without FSEvents: told which folders changed, it gives
+    /// a full scan's tree, including for a folder FSEvents lost track in.
+    #[test]
+    fn catch_up_from_named_changes() {
+        let dir = std::env::temp_dir().join(format!("broom-catchup-named-{}", std::process::id()));
+        sample(&dir);
+        let mut tree = scan(&dir, &Progress::default(), &[], OUTLINE_DEPTH);
+        write(&dir.join("big/nested/deeper/more.bin"), 70_000);
+        fs::remove_dir_all(dir.join("doomed")).unwrap();
+        write(&dir.join("other/sub/new.bin"), 9000);
+        let changes = [
+            Change { path: dir.join("big/nested/deeper"), recursive: false },
+            Change { path: dir.join("doomed/x"), recursive: false },
+            Change { path: dir.join("doomed"), recursive: false },
+            // FSEvents lost track here: everything below is walked again.
+            Change { path: dir.join("other"), recursive: true },
+            // Outside the root: ignored.
+            Change { path: PathBuf::from("/nowhere/else"), recursive: false },
+        ];
+        let work = tree.catch_up(&changes, &[]);
+        assert!(work.walked >= 1);
+        assert_eq!(shape(&tree), shape(&scan(&dir, &Progress::default(), &[], OUTLINE_DEPTH)));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A hard-linked file is counted once, at whichever link the first walk met
+    /// first. Re-reading the folder of the other link, shallowly or in full, must
+    /// not count it a second time.
+    #[test]
+    fn catch_up_counts_hard_links_once() {
+        let dir = std::env::temp_dir().join(format!("broom-catchup-links-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        write(&dir.join("one/data.bin"), 1 << 20);
+        fs::create_dir_all(dir.join("two")).unwrap();
+        fs::hard_link(dir.join("one/data.bin"), dir.join("two/data.bin")).unwrap();
+        let tree = scan(&dir, &Progress::default(), &[], OUTLINE_DEPTH);
+        let total = tree.nodes[Tree::ROOT].size;
+        let size_of = |tree: &Tree, rel: &str| tree.nodes[tree.find(&dir.join(rel)).unwrap()].size;
+        // The link that got no bytes, and its folder.
+        let (zeroed, folder) = if size_of(&tree, "one/data.bin") == 0 { ("one/data.bin", "one") } else { ("two/data.bin", "two") };
+        assert_eq!(size_of(&tree, zeroed), 0);
+        for recursive in [false, true] {
+            let mut caught = tree.clone();
+            caught.catch_up(&[Change { path: dir.join(folder), recursive }], &[]);
+            assert_eq!(size_of(&caught, zeroed), 0, "recursive: {recursive}");
+            assert_eq!(caught.nodes[Tree::ROOT].size, total, "recursive: {recursive}");
+        }
         fs::remove_dir_all(&dir).unwrap();
     }
 
