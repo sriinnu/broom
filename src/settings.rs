@@ -82,6 +82,8 @@ pub struct Settings {
     pub show_created: bool,
     /// The disks and folders column is hidden (⌥⌘S).
     pub rail_collapsed: bool,
+    /// The findings and cleanup plan column is hidden (⌥⌘0).
+    pub cleanup_collapsed: bool,
     /// How Broom looks, and whether it follows macOS between light and dark.
     pub theme: ThemeName,
     pub appearance: Appearance,
@@ -118,6 +120,7 @@ impl Default for Settings {
             show_modified: false,
             show_created: false,
             rail_collapsed: false,
+            cleanup_collapsed: false,
             theme: ThemeName::Classic,
             appearance: Appearance::Auto,
             default_root: DEFAULT_ROOT.to_string(),
@@ -263,6 +266,7 @@ mod tests {
             settings.show_modified = true;
             settings.show_created = true;
             settings.rail_collapsed = true;
+            settings.cleanup_collapsed = true;
             settings.default_root = "/Users".into();
             settings.last_root = Some("/Users/someone/Code".into());
             save(&settings).unwrap();

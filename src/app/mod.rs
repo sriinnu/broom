@@ -8,6 +8,7 @@ mod chart;
 mod cleanup;
 mod lifecycle;
 mod live_view;
+mod menus;
 mod modals;
 mod navigation;
 mod navigator;
@@ -78,12 +79,13 @@ actions!(broom, [
     OpenSettings, CloseSettings, About, CloseAbout,
     SelectNext, SelectPrev, OpenSelected, ToggleStaged, CloseReview, CopyPath, CopyRelativePath,
     SortBySize, SortByName, SortByModified,
-    GoBack, GoForward, ToggleRail, SelectAll
+    GoBack, GoForward, ToggleRail, ToggleCleanup, SelectAll
 ]);
 
 pub use self::broom::*;
 use self::chart::*;
 pub use self::lifecycle::*;
+pub use self::menus::*;
 use self::live_view::*;
 #[cfg(test)]
 use self::navigator::*;

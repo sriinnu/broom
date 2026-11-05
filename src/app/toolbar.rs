@@ -27,7 +27,56 @@ pub(super) fn rail_toggle(hidden: bool, cx: &mut Context<Broom>) -> impl IntoEle
         .on_click(cx.listener(|this, _, window, cx| this.toggle_rail(&ToggleRail, window, cx)))
 }
 
+/// The cleanup column's show/hide button: the rail toggle's mirror, its right
+/// column filled while the column is there. Hidden with things staged, it says
+/// how many, so a plan is never out of sight and out of mind.
+pub(super) fn cleanup_toggle(hidden: bool, staged: usize, cx: &mut Context<Broom>) -> impl IntoElement {
+    button_base("cleanup-toggle", "")
+        .bg(rgb(colors().card))
+        .border_color(rgb(colors().border))
+        .hover(|s| s.bg(rgb(colors().card_hover)))
+        .px_2()
+        .h(px(28.))
+        .flex()
+        .items_center()
+        .gap_1p5()
+        .when(hidden && staged > 0, |b| {
+            b.child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(rgb(colors().accent)).child(format!("{staged} staged")))
+        })
+        .child(
+            div()
+                .w(px(16.))
+                .h(px(12.))
+                .rounded(px(2.))
+                .border_1()
+                .border_color(rgb(colors().muted))
+                .flex()
+                .justify_end()
+                .when(!hidden, |d| d.child(div().w(px(5.)).h_full().bg(rgb(colors().muted)))),
+        )
+        .tooltip(move |_, cx| {
+            cx.new(|_| Tip(if hidden { "Show cleanup column ⌥⌘0".into() } else { "Hide cleanup column ⌥⌘0".into() })).into()
+        })
+        .on_click(cx.listener(|this, _, window, cx| this.toggle_cleanup(&ToggleCleanup, window, cx)))
+}
+
 impl Broom {
+    /// Hide or show the findings and cleanup plan, for more room for the chart
+    /// and the list. Not on the start screen, as with the rail.
+    pub(super) fn toggle_cleanup(&mut self, _: &ToggleCleanup, _: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.screen, Screen::Start) {
+            return;
+        }
+        self.settings.cleanup_collapsed = !self.settings.cleanup_collapsed;
+        let _ = settings::save(&self.settings);
+        self.refresh_menus(cx);
+        cx.notify();
+    }
+
+    pub(super) fn cleanup_hidden(&self) -> bool {
+        self.settings.cleanup_collapsed && !matches!(self.screen, Screen::Start)
+    }
+
     /// Hide or show the disks and folders column. With nothing scanned it's
     /// the only way to start, so there it stays, and the shortcut does nothing.
     pub(super) fn toggle_rail(&mut self, _: &ToggleRail, _: &mut Window, cx: &mut Context<Self>) {
@@ -36,6 +85,7 @@ impl Broom {
         }
         self.settings.rail_collapsed = !self.settings.rail_collapsed;
         let _ = settings::save(&self.settings);
+        self.refresh_menus(cx);
         cx.notify();
     }
 
@@ -199,11 +249,19 @@ impl Broom {
         }
         // Settings is reachable from every screen. A word, not a gear glyph:
         // "⚙" renders through the emoji path and all but disappears on glass.
-        bar.child(div().flex_1()).child(
+        let bar = bar.child(div().flex_1()).child(
             button("settings", "Settings")
                 .on_click(cx.listener(|this, _, window, cx| this.open_settings(&OpenSettings, window, cx)))
                 .tooltip(move |_, cx| cx.new(|_| Tip("Settings ⌘,".into())).into()),
-        )
+        );
+        if matches!(self.screen, Screen::Start) {
+            return bar;
+        }
+        let staged = match &self.screen {
+            Screen::Results(r) => r.collector.len(),
+            _ => 0,
+        };
+        bar.child(cleanup_toggle(self.cleanup_hidden(), staged, cx))
     }
 
     /// The left rail: every disk with its fill, the home folder, synced cloud

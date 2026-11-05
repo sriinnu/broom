@@ -77,7 +77,7 @@ impl Render for Broom {
             .flex()
             .children((!self.rail_hidden()).then(|| self.render_rail(cx)))
             .child(div().flex_1().min_w_0().h_full().flex().child(content))
-            .child(self.render_cleanup(cx));
+            .children((!self.cleanup_hidden()).then(|| self.render_cleanup(cx)));
 
         // A menu is only rendered while its node is still part of the tree.
         let menu = match (&self.screen, &self.context_menu) {
@@ -119,6 +119,10 @@ impl Render for Broom {
             .on_action(cx.listener(Self::go_back))
             .on_action(cx.listener(Self::go_forward))
             .on_action(cx.listener(Self::toggle_rail))
+            .on_action(cx.listener(Self::toggle_cleanup))
+            .on_action(cx.listener(Self::close_window))
+            .on_action(cx.listener(Self::minimize))
+            .on_action(cx.listener(Self::zoom))
             .on_action(cx.listener(Self::select_all))
             .size_full()
             .flex()

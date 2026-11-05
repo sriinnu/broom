@@ -27,15 +27,14 @@ mod cli;
 
 use std::path::PathBuf;
 
-use gpui::{App, KeyBinding, Menu, MenuItem, actions};
+use gpui::{App, KeyBinding};
 
 use app::{
-    About, CloseAbout, CloseReview, CloseSettings, DismissQuery, FocusQuery, GoUp, GoBack, GoForward, ToggleRail, SelectAll, OpenFolder, OpenSelected, OpenSettings, Rescan,
+    CloseAbout, CloseReview, CloseSettings, DismissQuery, FocusQuery, GoUp, GoBack, GoForward, ToggleRail, ToggleCleanup, SelectAll, OpenFolder, OpenSelected, OpenSettings, Rescan,
     SelectNext, SelectPrev, StartOver, SubmitQuery, ToggleStaged, CopyPath, CopyRelativePath,
-    SortBySize, SortByName, SortByModified,
+    SortBySize, SortByName, SortByModified, Quit, HideApp, HideOthers, CloseWindow, Minimize,
 };
 
-actions!(broom, [Quit]);
 
 fn main() {
     let _ = app::LAUNCHED.set(std::time::Instant::now());
@@ -79,7 +78,7 @@ fn main() {
     }
 
     gpui_platform::application().run(move |cx: &mut App| {
-        cx.on_action(|_: &Quit, cx| cx.quit());
+        app::handle_app_menu_actions(cx);
         // The text input's defaults go in first: for the same key and context, the later
         // binding wins, so enter and escape below take over inside the query field.
         cx.bind_keys(
@@ -97,7 +96,14 @@ fn main() {
             KeyBinding::new("cmd-]", GoForward, Some("Broom && !EditableText")),
             KeyBinding::new("ctrl-left", GoBack, Some("Broom && !EditableText")),
             KeyBinding::new("ctrl-right", GoForward, Some("Broom && !EditableText")),
+            // Apple's sidebar key first: the menu shows the first binding. ⌥⌘S still works.
+            KeyBinding::new("ctrl-cmd-s", ToggleRail, Some("Broom")),
             KeyBinding::new("cmd-alt-s", ToggleRail, Some("Broom")),
+            KeyBinding::new("cmd-h", HideApp, None),
+            KeyBinding::new("cmd-alt-h", HideOthers, None),
+            KeyBinding::new("cmd-w", CloseWindow, None),
+            KeyBinding::new("cmd-m", Minimize, None),
+            KeyBinding::new("cmd-alt-0", ToggleCleanup, Some("Broom")),
             KeyBinding::new("cmd-a", SelectAll, Some("Broom && !EditableText")),
             KeyBinding::new("cmd-shift-d", StartOver, None),
             KeyBinding::new("cmd-f", FocusQuery, None),
@@ -127,62 +133,7 @@ fn main() {
             // The menu-bar panel: escape closes it, enter asks.
             KeyBinding::new("escape", panel::ClosePanel, Some("SearchPanel")),
         ]);
-        cx.set_menus(vec![
-            Menu {
-                name: "Broom".into(),
-                items: vec![
-                    MenuItem::action("About Broom", About),
-                    MenuItem::separator(),
-                    MenuItem::action("Settings…", OpenSettings),
-                    MenuItem::separator(),
-                    MenuItem::action("Quit Broom", Quit),
-                ],
-                disabled: false,
-            },
-            Menu {
-                name: "File".into(),
-                items: vec![
-                    MenuItem::action("Open Folder…", OpenFolder),
-                    MenuItem::action("Ask Broom…", FocusQuery),
-                    MenuItem::action("Rescan", Rescan),
-                    MenuItem::separator(),
-                    MenuItem::action("Clear Scan", StartOver),
-                ],
-                disabled: false,
-            },
-            Menu {
-                name: "View".into(),
-                items: vec![
-                    MenuItem::action("Sort by Size", SortBySize),
-                    MenuItem::action("Sort by Name", SortByName),
-                    MenuItem::action("Sort by Date Modified", SortByModified),
-                    MenuItem::separator(),
-                    MenuItem::action("Hide or Show Sidebar", ToggleRail),
-                ],
-                disabled: false,
-            },
-            Menu {
-                name: "Go".into(),
-                items: vec![
-                    MenuItem::action("Back", GoBack),
-                    MenuItem::action("Forward", GoForward),
-                    MenuItem::action("Enclosing Folder", GoUp),
-                    MenuItem::separator(),
-                    MenuItem::action("Select All", SelectAll),
-                ],
-                disabled: false,
-            },
-            Menu {
-                name: "Go".into(),
-                items: vec![
-                    MenuItem::action("Enclosing Folder", GoUp),
-                    MenuItem::separator(),
-                    MenuItem::action("Copy Path", CopyPath),
-                    MenuItem::action("Copy Path with ~", CopyRelativePath),
-                ],
-                disabled: false,
-            },
-        ]);
+        cx.set_menus(app::app_menus(loaded.settings.rail_collapsed, loaded.settings.cleanup_collapsed));
 
         // Broom is a menu-bar utility: closing the window leaves the app (and
         // its 🧹 item) running; "Open Broom" in that menu brings the window
