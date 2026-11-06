@@ -6,7 +6,7 @@ mod api_keys;
 mod broom;
 mod chart;
 mod cleanup;
-mod icons;
+pub(crate) mod icons;
 mod lifecycle;
 mod live_view;
 mod menus;

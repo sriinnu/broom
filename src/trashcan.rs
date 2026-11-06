@@ -1,15 +1,20 @@
 //! The drop: when a move to the Trash is confirmed, the ticked folders and files
 //! tumble one by one into a ligne-claire bin while the real move runs. The lid
-//! opens for the first item, stays open until the last one is in and the move
-//! has really finished, then closes with a bounce. It never blocks the move and
-//! never runs longer than about a second and a half, however long the list.
+//! swings open for the first item and rattles as each one lands; the bin jolts
+//! under the heavy ones and fills up, the last few poking out of the top. Once
+//! the last item is in and the move has really finished, the lid slams shut
+//! with a bounce and a burst of comic action lines. It never blocks the move
+//! and never runs longer than about two seconds, however long the list.
+//!
+//! With Reduce Motion on, nothing flies, spins or bounces: the items fade out
+//! of the queue one by one as the bin fills, and the lid simply shuts.
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use gpui::{Bounds, Hsla, PathBuilder, Pixels, Point, Window, canvas, point, prelude::*, px, rgb};
+use gpui::{Bounds, ContentMask, Hsla, PathBuilder, Pixels, Point, Window, canvas, point, prelude::*, px, rgb, size};
 
 use crate::clock;
 use crate::scan::Kind;
@@ -112,18 +117,30 @@ const PAPER_FOLD: u32 = 0xd9cfbd;
 const CONTOUR: f32 = 1.5;
 
 /// Seconds: the lid swings open, the first item leaves, each flight, the lid
-/// closes, and the bounce after.
-const LID_OPEN: f32 = 0.18;
+/// closes, and the bounce after (the action lines fit inside it).
+const LID_OPEN: f32 = 0.24;
 const FIRST: f32 = 0.12;
 const FLIGHT: f32 = 0.42;
-const CLOSE: f32 = 0.22;
+const CLOSE: f32 = 0.2;
 const BOUNCE: f32 = 0.36;
+/// Reduce Motion: each item's fade, and how long the shut bin stays in view.
+const FADE: f32 = 0.18;
+const HOLD: f32 = 0.25;
+/// How long a landing shakes the bin and rattles the lid.
+const JOLT: f32 = 0.22;
 /// Lanes across the top of the stage that items wait in.
 const SLOTS: usize = 10;
+/// The most items that take part. A longer list is sampled evenly down to
+/// this, and the count under the bin scales back up to the real one: a
+/// thousand folders can't each have a turn in under two seconds.
+const SHOWN: usize = 40;
+/// Things poking out of the top of a full bin: where across the mouth (in
+/// rim radii), their tilt, and at what fill each one shows.
+const POKES: [(f32, f32, f32); 5] = [(-0.42, -0.38, 0.2), (0.3, 0.3, 0.4), (-0.08, 0.06, 0.6), (0.52, 0.55, 0.78), (-0.6, -0.2, 0.92)];
 
 pub struct Item {
     pub kind: Kind,
-    /// 0.6..1: bigger things draw bigger.
+    /// 0.6..1: bigger things draw bigger, and land harder.
     pub weight: f32,
 }
 
@@ -134,7 +151,8 @@ impl Item {
         items
             .iter()
             .map(|&(kind, size)| {
-                let rel = ((size.max(1) as f32).ln() / max.ln()).clamp(0.0, 1.0);
+                // A lone item (or all one size) is the heaviest there is.
+                let rel = if max <= 1.0 { 1.0 } else { ((size.max(1) as f32).ln() / max.ln()).clamp(0.0, 1.0) };
                 Item { kind, weight: 0.6 + 0.4 * rel }
             })
             .collect()
@@ -143,18 +161,34 @@ impl Item {
 
 pub struct Drop {
     start: Instant,
+    /// The ones that fly; at most `SHOWN`.
     items: Vec<Item>,
+    /// How many there really are.
+    count: usize,
     stagger: f32,
     bytes: u64,
     /// Seconds after `start` when the real move finished; the lid can't close before.
     settled: Cell<Option<f32>>,
+    /// Reduce Motion, read once when the drop starts so it can't change mid-way.
+    still: bool,
 }
 
 impl Drop {
     pub fn new(items: Vec<Item>, bytes: u64) -> Rc<Self> {
+        Rc::new(Self::with_motion(items, bytes, crate::delight::reduce_motion()))
+    }
+
+    fn with_motion(items: Vec<Item>, bytes: u64, still: bool) -> Self {
+        let count = items.len();
+        let items: Vec<Item> = if count <= SHOWN {
+            items
+        } else {
+            let mut items: Vec<Option<Item>> = items.into_iter().map(Some).collect();
+            (0..SHOWN).filter_map(|k| items[k * count / SHOWN].take()).collect()
+        };
         let n = items.len().max(1);
-        let stagger = (0.7 / n as f32).clamp(0.012, 0.1);
-        Rc::new(Drop { start: clock::now(), items, stagger, bytes, settled: Cell::new(None) })
+        let stagger = (0.55 / n as f32).min(0.1);
+        Drop { start: clock::now(), items, count, stagger, bytes, settled: Cell::new(None), still }
     }
 
     fn t(&self) -> f32 {
@@ -165,8 +199,13 @@ impl Drop {
         FIRST + i as f32 * self.stagger
     }
 
+    /// When item `i` is in the bin: the end of its flight, or of its fade.
+    fn land(&self, i: usize) -> f32 {
+        self.launch(i) + if self.still { FADE } else { FLIGHT }
+    }
+
     fn last_land(&self) -> f32 {
-        self.launch(self.items.len().saturating_sub(1)) + FLIGHT
+        self.land(self.items.len().saturating_sub(1))
     }
 
     /// The move really finished: the lid may close once the last item is in.
@@ -180,28 +219,95 @@ impl Drop {
         self.settled.get().map(|s| s.max(self.last_land() + 0.1))
     }
 
+    /// From the lid starting to close to the end of the show.
+    fn closing(&self) -> f32 {
+        if self.still { HOLD } else { CLOSE + BOUNCE }
+    }
+
     /// After `settle`: how long until the lid is shut and the bounce is over.
     pub fn remaining(&self) -> Duration {
         match self.close_at() {
-            Some(close) => Duration::from_secs_f32((close + CLOSE + BOUNCE - self.t()).max(0.0)),
+            Some(close) => Duration::from_secs_f32((close + self.closing() - self.t()).max(0.0)),
             None => Duration::ZERO,
         }
     }
 
-    fn finished(&self) -> bool {
-        self.close_at().is_some_and(|close| self.t() >= close + CLOSE + BOUNCE)
+    fn finished_at(&self, t: f32) -> bool {
+        self.close_at().is_some_and(|close| t >= close + self.closing())
     }
 
-    /// Items in the bin so far, and the bytes they stand for.
+    /// Items in the bin so far, and the bytes they stand for, counted in
+    /// real items however few of them are drawn.
     pub fn landed(&self) -> (usize, u64) {
-        let t = self.t();
-        let n = (0..self.items.len()).filter(|&i| t >= self.launch(i) + FLIGHT).count();
+        self.landed_at(self.t())
+    }
+
+    fn landed_at(&self, t: f32) -> (usize, u64) {
+        let n = (0..self.items.len()).filter(|&i| t >= self.land(i)).count();
         let fraction = if self.items.is_empty() { 1.0 } else { n as f64 / self.items.len() as f64 };
-        (n, (self.bytes as f64 * fraction) as u64)
+        ((self.count as f64 * fraction).round() as usize, (self.bytes as f64 * fraction) as u64)
     }
 
     pub fn total(&self) -> usize {
-        self.items.len()
+        self.count
+    }
+
+    /// How open the lid is, 0 (shut) to about 1.1 (the overshoot as it swings
+    /// back), plus a rattle in radians while things land.
+    fn lid(&self, t: f32) -> (f32, f32) {
+        let shut = self.close_at().map(|close| (t - close) / if self.still { f32::EPSILON } else { CLOSE });
+        if self.still {
+            // No swing: open from the first frame, shut the moment it's done.
+            return (if shut.is_some_and(|k| k >= 0.0) { 0.0 } else { 1.0 }, 0.0);
+        }
+        let mut open = back_out(t / LID_OPEN).max(0.0);
+        if let Some(k) = shut {
+            // Accelerating into the slam.
+            let k = k.clamp(0.0, 1.0);
+            open *= 1.0 - k * k;
+        }
+        let rattle = self.recent(t).map(|(u, w)| 0.07 * w * (u * 26.0).sin() * (1.0 - u)).sum::<f32>();
+        (open, if open > 0.05 { rattle.clamp(-0.12, 0.12) } else { 0.0 })
+    }
+
+    /// Landings in the last `JOLT` seconds: how far through (0..1) and how heavy.
+    fn recent(&self, t: f32) -> impl Iterator<Item = (f32, f32)> + '_ {
+        // Only the last few launched can be recent; scan back from there.
+        let last = ((t - FIRST - FLIGHT) / self.stagger).floor().max(0.0) as usize;
+        let from = last.saturating_sub((JOLT / self.stagger).ceil() as usize + 1);
+        (from..=last.min(self.items.len().saturating_sub(1)))
+            .filter(move |_| !self.items.is_empty())
+            .filter_map(move |i| {
+                let u = (t - self.land(i)) / JOLT;
+                (0.0..1.0).contains(&u).then(|| (u, self.items[i].weight))
+            })
+    }
+
+    /// How squashed the bin is: a jolt as each item lands (the heavier, the
+    /// harder), and the bounce once the lid has slammed.
+    fn squash(&self, t: f32) -> f32 {
+        if self.still {
+            return 0.0;
+        }
+        let jolt = self
+            .recent(t)
+            .map(|(u, w)| 0.05 * (w - 0.5) * 2.0 * (std::f32::consts::PI * u).sin() * (1.0 - u))
+            .fold(0.0f32, f32::max);
+        let bounce = self.close_at().map_or(0.0, |close| {
+            let u = (t - close - CLOSE) / BOUNCE;
+            if u > 0.0 && u < 1.0 { 0.09 * (std::f32::consts::PI * u).sin() * (1.0 - u) } else { 0.0 }
+        });
+        jolt.max(bounce)
+    }
+
+    /// How full the bin looks, 0..1, rising smoothly as each item lands.
+    fn fill(&self, t: f32) -> f32 {
+        if self.items.is_empty() {
+            return 0.0;
+        }
+        let rise = if self.still { FADE } else { 0.15 };
+        let sum: f32 = (0..self.items.len()).map(|i| ((t - self.land(i)) / rise).clamp(0.0, 1.0)).sum();
+        sum / self.items.len() as f32
     }
 }
 
@@ -215,9 +321,29 @@ fn to_hsla(color: u32) -> Hsla {
     rgb(color).into_color()
 }
 
+fn with_alpha(color: u32, alpha: f32) -> Hsla {
+    let mut c = to_hsla(color);
+    c.alpha = alpha;
+    c
+}
+
+/// Marks drawn on the card itself rather than on a shape (speed lines,
+/// action lines, the shadow): ink on a light card, cream on a dark one, or
+/// they vanish into it.
+fn marks(alpha: f32) -> Hsla {
+    with_alpha(if crate::theme::is_dark() { CREAM } else { INK }, alpha)
+}
+
 fn smooth(x: f32) -> f32 {
     let x = x.clamp(0.0, 1.0);
     x * x * (3.0 - 2.0 * x)
+}
+
+/// Ease out past the end and back: the lid swings a touch too far, then settles.
+fn back_out(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0) - 1.0;
+    let c = 1.9;
+    1.0 + (c + 1.0) * x * x * x + c * x * x
 }
 
 fn lerp(a: f32, b: f32, k: f32) -> f32 {
@@ -288,24 +414,33 @@ const FOLDER_TAB_SHAPE: [(f32, f32); 4] = [(-11.0, -6.0), (-3.0, -6.0), (-1.0, -
 const PAPER: [(f32, f32); 5] = [(-7.0, -9.5), (3.0, -9.5), (7.0, -5.5), (7.0, 9.5), (-7.0, 9.5)];
 const PAPER_EAR: [(f32, f32); 3] = [(3.0, -9.5), (7.0, -5.5), (3.0, -5.5)];
 
-fn icon(window: &mut Window, kind: Kind, at: (f32, f32), scale: f32, angle: f32, ink: Hsla) {
+/// A file or folder; `alpha` below 1 fades the whole thing, ink and all.
+fn icon(window: &mut Window, kind: Kind, at: (f32, f32), scale: f32, angle: f32, alpha: f32) {
+    let ink = with_alpha(INK, alpha);
     match kind {
         Kind::File => {
-            piece(window, &PAPER, at, scale, angle, to_hsla(CREAM), ink);
+            piece(window, &PAPER, at, scale, angle, with_alpha(CREAM, alpha), ink);
             let ear = place(&PAPER_EAR, at, scale, angle);
-            fill(window, &ear, to_hsla(PAPER_FOLD));
+            fill(window, &ear, with_alpha(PAPER_FOLD, alpha));
             // Two lines of "text".
             for (i, y) in [(-1.5f32), 2.5].iter().enumerate() {
                 let w = if i == 0 { 9.0 } else { 6.0 };
                 let a = place(&[(-4.5, *y), (-4.5 + w, *y)], at, scale, angle);
-                line(window, a[0], a[1], 1.2 * scale, to_hsla(PAPER_FOLD));
+                line(window, a[0], a[1], 1.2 * scale, with_alpha(PAPER_FOLD, alpha));
             }
         }
         _ => {
-            piece(window, &FOLDER_TAB_SHAPE, at, scale, angle, to_hsla(FOLDER_TAB), ink);
-            piece(window, &FOLDER_BODY, at, scale, angle, to_hsla(FOLDER), ink);
+            piece(window, &FOLDER_TAB_SHAPE, at, scale, angle, with_alpha(FOLDER_TAB, alpha), ink);
+            piece(window, &FOLDER_BODY, at, scale, angle, with_alpha(FOLDER, alpha), ink);
         }
     }
+}
+
+/// A comic dust puff: a little cloud, cream with an ink contour, swelling and fading.
+fn puff(window: &mut Window, center: (f32, f32), radius: f32, alpha: f32, s: f32) {
+    let shape = ellipse(center.0, center.1, radius, radius * 0.85, 0.0, 1.0);
+    fill(window, &shape, with_alpha(CREAM, alpha));
+    outline(window, &shape, 1.1 * s, with_alpha(INK, alpha * 0.8));
 }
 
 fn paint(window: &mut Window, bounds: Bounds<Pixels>, drop: &Drop) {
@@ -315,27 +450,25 @@ fn paint(window: &mut Window, bounds: Bounds<Pixels>, drop: &Drop) {
     let w: f32 = bounds.size.width.into();
     let h: f32 = bounds.size.height.into();
     let ink = to_hsla(INK);
+    let pi = std::f32::consts::PI;
     // The bin is drawn in a 100-unit-tall box and scaled to the stage.
     let s = (h / 150.0).clamp(0.6, 1.6);
     let cx = ox + w / 2.0;
 
-    // Lid: open quickly, hold, close once the move is really done; then a bounce.
-    let close = drop.close_at();
-    let mut open = smooth(t / LID_OPEN);
-    let mut squash = 0.0;
-    if let Some(close) = close {
-        open *= 1.0 - smooth((t - close) / CLOSE);
-        let u = ((t - close - CLOSE) / BOUNCE).clamp(0.0, 1.0);
-        if u > 0.0 && u < 1.0 {
-            squash = 0.09 * (std::f32::consts::PI * u).sin() * (1.0 - u);
-        }
-    }
+    let (open, rattle) = drop.lid(t);
+    let squash = drop.squash(t);
+    let fullness = drop.fill(t);
     let floor = oy + h - 8.0 * s;
     let body_h = 62.0 * s * (1.0 - squash);
     let top_y = floor - body_h;
-    let (rx_top, rx_bottom) = (30.0 * s * (1.0 + squash * 0.8), 25.0 * s * (1.0 + squash * 0.8));
+    let widen = 1.0 + squash * 0.8;
+    let (rx_top, rx_bottom) = (30.0 * s * widen, 25.0 * s * widen);
     let ry = 6.5 * s;
     let mouth_y = top_y;
+
+    // A flat shadow on the floor, spreading as the bin squashes.
+    let shadow = ellipse(cx, floor + 1.5 * s, rx_bottom * 1.3 * widen, 4.0 * s, 0.0, 1.0);
+    fill(window, &shadow, if crate::theme::is_dark() { with_alpha(0x000000, 0.35) } else { with_alpha(INK, 0.16) });
 
     // Body: a trapezoid, three ribs, a highlight, then the inside of the mouth.
     let body = [
@@ -359,42 +492,92 @@ fn paint(window: &mut Window, bounds: Bounds<Pixels>, drop: &Drop) {
     let hole = ellipse(cx, mouth_y, rx_top, ry, 0.0, 1.0);
     fill(window, &hole, to_hsla(CAN_DARK));
 
-    // The queue along the top, and the items in flight.
+    // Everything that goes into the bin is cut off a little below the rim, so
+    // the front lip hides where it enters and nothing draws over the body.
+    let into_bin = ContentMask { bounds: Bounds::new(bounds.origin, size(bounds.size.width, px(mouth_y + ry * 0.5 - oy))) };
     let shelf_y = oy + 16.0 * s;
     let lane = |i: usize| ox + w * (0.08 + 0.84 * ((i % SLOTS) as f32 + 0.5) / SLOTS as f32);
-    let n = drop.items.len();
-    for (i, item) in drop.items.iter().enumerate() {
-        let k = (t - drop.launch(i)) / FLIGHT;
-        let scale = s * 0.9 * item.weight;
-        if k < 0.0 {
-            // Waiting: only the next few lanes' worth, so a long list doesn't pile up.
-            if i >= SLOTS * 2 {
+    window.with_content_mask(Some(into_bin), |window| {
+        // What's in already, poking out of the top as the bin fills.
+        let n = drop.items.len();
+        for (j, &(across, tilt, at)) in POKES.iter().enumerate() {
+            let rise = smooth((fullness - at) / 0.15);
+            if rise <= 0.0 || n == 0 {
                 continue;
             }
-            let stack = (i / SLOTS) as f32;
-            let wobble = (t * 3.0 + i as f32).sin() * 0.03;
-            icon(window, item.kind, (lane(i), shelf_y - stack * 6.0 * s), scale, wobble, ink);
-        } else if k < 0.96 {
-            let x0 = lane(i);
-            let x1 = cx + ((i % 5) as f32 - 2.0) * 3.0 * s;
-            let x = lerp(x0, x1, smooth(k));
-            let hop = 18.0 * s;
-            let y = shelf_y + (mouth_y - shelf_y) * k * k - hop * (std::f32::consts::PI * k).sin();
-            let spin = (0.9 + (i % 3) as f32 * 0.5) * if i % 2 == 0 { 1.0 } else { -1.0 };
-            let shrink = if k > 0.72 { lerp(1.0, 0.5, (k - 0.72) / 0.24) } else { 1.0 };
-            icon(window, item.kind, (x, y), scale * shrink, k * spin, ink);
-        } else {
-            // Landed: a puff of dust at the mouth for a moment.
-            let since = t - (drop.launch(i) + FLIGHT);
-            if since < 0.28 {
-                let u = since / 0.28;
-                let mut puff = to_hsla(CREAM);
-                puff.alpha = 0.7 * (1.0 - u);
-                for j in 0..3 {
-                    let dx = ((j as f32) - 1.0) * (6.0 + 8.0 * u) * s;
-                    let r = (2.8 - 1.6 * u) * s;
-                    disc(window, point(px(cx + dx), px(mouth_y - (4.0 + 10.0 * u) * s)), r, puff);
+            let item = &drop.items[(j * n / POKES.len()).min(n - 1)];
+            let y = mouth_y + ry * 0.5 + 6.0 * s - rise * 10.0 * s;
+            icon(window, item.kind, (cx + across * rx_top, y), s * 0.62, tilt + rattle, 1.0);
+        }
+
+        // The queue along the top, and the items on their way in.
+        for (i, item) in drop.items.iter().enumerate() {
+            let k = (t - drop.launch(i)) / FLIGHT;
+            let scale = s * 0.9 * item.weight;
+            let waiting = t < drop.launch(i);
+            if drop.still {
+                // Reduce Motion: no flight, just a fade out of the queue.
+                let fade = 1.0 - ((t - drop.launch(i)) / FADE).clamp(0.0, 1.0);
+                if fade > 0.0 && i < SLOTS * 2 {
+                    let stack = (i / SLOTS) as f32;
+                    icon(window, item.kind, (lane(i), shelf_y - stack * 6.0 * s), scale, 0.0, fade);
                 }
+                continue;
+            }
+            if waiting {
+                // Only the next few lanes' worth, so a long list doesn't pile up.
+                if i >= SLOTS * 2 {
+                    continue;
+                }
+                let stack = (i / SLOTS) as f32;
+                let wobble = (t * 3.0 + i as f32).sin() * 0.03;
+                // A crouch just before the jump.
+                let crouch = smooth(1.0 - (drop.launch(i) - t) / 0.08) * 2.0 * s;
+                icon(window, item.kind, (lane(i), shelf_y - stack * 6.0 * s + crouch), scale, wobble, 1.0);
+            } else if k < 1.0 {
+                let x0 = lane(i);
+                let x1 = cx + ((i % 5) as f32 - 2.0) * 3.0 * s;
+                let ex = smooth(k);
+                let x = lerp(x0, x1, ex);
+                let hop = 18.0 * s;
+                let fall = |k: f32| shelf_y + (mouth_y + 4.0 * s - shelf_y) * k * k - hop * (pi * k).sin();
+                let y = fall(k);
+                let spin = (0.9 + (i % 3) as f32 * 0.5) * if i % 2 == 0 { 1.0 } else { -1.0 };
+                let shrink = if k > 0.75 { lerp(1.0, 0.7, (k - 0.75) / 0.25) } else { 1.0 };
+                // Speed lines trailing the throw, the comic way of saying "fast".
+                if (0.12..0.8).contains(&k) {
+                    let dk = 0.04;
+                    let (bx, by) = (lerp(x0, x1, smooth(k - dk)), fall(k - dk));
+                    let (dx, dy) = (x - bx, y - by);
+                    let len = (dx * dx + dy * dy).sqrt().max(f32::EPSILON);
+                    let (ux, uy) = (dx / len, dy / len);
+                    let fade = (1.0 - (k - 0.12) / 0.68).clamp(0.0, 1.0) * 0.55;
+                    for side in [-1.0f32, 1.0] {
+                        let off = side * 4.5 * s * item.weight;
+                        let start = (x - ux * 12.0 * s - uy * off, y - uy * 12.0 * s + ux * off);
+                        let end = (start.0 - ux * 9.0 * s, start.1 - uy * 9.0 * s);
+                        line(window, point(px(start.0), px(start.1)), point(px(end.0), px(end.1)), 1.2 * s, marks(fade));
+                    }
+                }
+                icon(window, item.kind, (x, y), scale * shrink, k * spin, 1.0);
+            }
+        }
+    });
+
+    // Dust where each item went in, above the rim.
+    if !drop.still {
+        for i in 0..drop.items.len() {
+            let since = t - drop.land(i);
+            if !(0.0..0.3).contains(&since) {
+                continue;
+            }
+            let u = since / 0.3;
+            let alpha = 0.85 * (1.0 - u);
+            let wgt = drop.items[i].weight;
+            for j in 0..3 {
+                let dx = ((j as f32) - 1.0) * (7.0 + 10.0 * u) * s * wgt;
+                let r = (3.2 - 1.2 * u) * s * wgt;
+                puff(window, (cx + dx, mouth_y - (3.0 + 9.0 * u + if j == 1 { 3.0 } else { 0.0 }) * s), r, alpha, s);
             }
         }
     }
@@ -408,7 +591,7 @@ fn paint(window: &mut Window, bounds: Bounds<Pixels>, drop: &Drop) {
 
     // The lid, hinged at the back-left of the rim, with a knob on top.
     let hinge = (cx - rx_top - 1.0 * s, mouth_y - 1.5 * s);
-    let angle = -1.3 * open;
+    let angle = -1.3 * open + rattle;
     let span = 2.0 * rx_top / s + 2.0;
     let lid: [(f32, f32); 6] = [(0.0, 0.0), (span, 0.0), (span - 2.0, -6.0), (span * 0.8, -8.5), (span * 0.2, -8.5), (2.0, -6.0)];
     piece(window, &lid, hinge, s, angle, to_hsla(CAN_LIGHT), ink);
@@ -419,8 +602,108 @@ fn paint(window: &mut Window, bounds: Bounds<Pixels>, drop: &Drop) {
     disc(window, knob[0], (3.2 + CONTOUR) * s, ink);
     disc(window, knob[0], 3.2 * s, to_hsla(CAN_LIGHT));
 
-    let _ = n;
-    if !drop.finished() {
+    // The slam: action lines bursting out around the shut lid.
+    if let (false, Some(close)) = (drop.still, drop.close_at()) {
+        let u = (t - close - CLOSE * 0.85) / 0.3;
+        if (0.0..1.0).contains(&u) {
+            let alpha = 1.0 - u;
+            let centre = (cx, mouth_y - 6.0 * s);
+            for k in 0..7 {
+                // A fan over the lid, from the left round to the right.
+                let a = pi + pi * (k as f32 + 0.5) / 7.0;
+                let (r0, r1) = ((rx_top / s + 6.0 + 10.0 * u) * s, (rx_top / s + 12.0 + 16.0 * u) * s);
+                let (sin, cos) = a.sin_cos();
+                let ry0 = 0.55;
+                line(
+                    window,
+                    point(px(centre.0 + r0 * cos), px(centre.1 + r0 * sin * ry0)),
+                    point(px(centre.0 + r1 * cos), px(centre.1 + r1 * sin * ry0)),
+                    1.6 * s,
+                    marks(alpha * 0.9),
+                );
+            }
+        }
+    }
+
+    if !drop.finished_at(t) {
         window.request_animation_frame();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn items(n: usize) -> Vec<Item> {
+        (0..n).map(|i| Item { kind: if i % 2 == 0 { Kind::Dir } else { Kind::File }, weight: 0.6 + 0.4 * (i % 3) as f32 / 2.0 }).collect()
+    }
+
+    #[test]
+    fn weights_follow_size_and_a_lone_item_is_heaviest() {
+        let w = Item::from_sizes(&[(Kind::Dir, 1 << 30), (Kind::File, 1 << 10), (Kind::File, 0)]);
+        assert!((w[0].weight - 1.0).abs() < 1e-6);
+        assert!(w[1].weight < w[0].weight && w[1].weight >= 0.6);
+        assert!((w[2].weight - 0.6).abs() < 1e-6);
+        assert!((Item::from_sizes(&[(Kind::File, 1)])[0].weight - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn lid_opens_with_an_overshoot_and_shuts_after_the_last_landing() {
+        let drop = Drop::with_motion(items(4), 100, false);
+        assert_eq!(drop.lid(0.0).0, 0.0);
+        let peak = (1..50).map(|i| drop.lid(i as f32 * LID_OPEN / 50.0).0).fold(0.0, f32::max);
+        assert!(peak > 1.02, "swings past open, got {peak}");
+        assert!((drop.lid(LID_OPEN).0 - 1.0).abs() < 1e-4);
+        // Settled early: the lid still waits for the last item.
+        drop.settled.set(Some(0.0));
+        let close = drop.close_at().unwrap();
+        assert!(close >= drop.last_land());
+        assert!(drop.lid(close - 0.01).0 > 0.5);
+        assert_eq!(drop.lid(close + CLOSE).0, 0.0);
+        assert!(!drop.finished_at(close + CLOSE));
+        assert!(drop.finished_at(close + CLOSE + BOUNCE));
+    }
+
+    #[test]
+    fn landings_jolt_the_bin_and_fill_it() {
+        let drop = Drop::with_motion(items(3), 100, false);
+        assert_eq!(drop.fill(0.0), 0.0);
+        let land = drop.land(0);
+        assert_eq!(drop.squash(land - 0.01), 0.0);
+        assert!(drop.squash(land + JOLT * 0.3) > 0.0, "heavy landing squashes the bin");
+        assert!(drop.lid(land + 0.02).1.abs() > 0.0, "and rattles the lid");
+        assert!((drop.fill(drop.last_land() + 1.0) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn reduce_motion_never_moves_the_bin_and_ends_sooner() {
+        let still = Drop::with_motion(items(20), 100, true);
+        let moving = Drop::with_motion(items(20), 100, false);
+        for i in 0..200 {
+            let t = i as f32 * 0.01;
+            assert_eq!(still.squash(t), 0.0);
+            assert_eq!(still.lid(t).1, 0.0);
+            assert!(still.lid(t).0 == 1.0, "open the whole time, no swing");
+        }
+        still.settled.set(Some(0.0));
+        moving.settled.set(Some(0.0));
+        let end = |d: &Drop| d.close_at().unwrap() + d.closing();
+        assert!(end(&still) < end(&moving));
+        assert_eq!(still.lid(still.close_at().unwrap()).0, 0.0);
+    }
+
+    #[test]
+    fn a_long_list_still_fits_in_under_two_seconds() {
+        let drop = Drop::with_motion(items(5000), 100, false);
+        drop.settled.set(Some(0.0));
+        let end = drop.close_at().unwrap() + drop.closing();
+        assert!(end < 1.9, "took {end}");
+        // Forty fly, and the count still reaches all five thousand.
+        assert_eq!(drop.items.len(), SHOWN);
+        assert_eq!(drop.total(), 5000);
+        assert_eq!(drop.landed_at(0.0), (0, 0));
+        assert_eq!(drop.landed_at(drop.last_land()), (5000, 100));
+        let (half, _) = drop.landed_at(drop.land(SHOWN / 2 - 1));
+        assert_eq!(half, 2500);
     }
 }

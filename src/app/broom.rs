@@ -293,6 +293,31 @@ impl Broom {
         matches!(self.screen, Screen::Results(_))
     }
 
+    /// For the recorder: open the review card mid-move, with `count` of the
+    /// root's children tumbling in, and nothing really moved. `drop_settle`
+    /// is the move finishing. For looking at the drop, not for testing Trash.
+    #[cfg(feature = "snapshot")]
+    pub fn demo_drop(&mut self, count: usize, cx: &mut Context<Self>) {
+        let Some(r) = self.results() else { return };
+        let children: Vec<usize> = (0..r.tree.nodes.len()).filter(|&ix| r.tree.nodes[ix].parent == Some(Tree::ROOT)).collect();
+        if children.is_empty() {
+            return;
+        }
+        let items: Vec<usize> = (0..count).map(|i| children[i % children.len()]).collect();
+        let sizes: Vec<(scan::Kind, u64)> = items.iter().map(|&ix| (r.tree.nodes[ix].kind, r.tree.nodes[ix].size)).collect();
+        let bytes = sizes.iter().map(|&(_, s)| s).sum();
+        let drop = trashcan::Drop::new(trashcan::Item::from_sizes(&sizes), bytes);
+        self.review = Some(ReviewState { items, frees: HashMap::new(), working: true, drop: Some(drop) });
+        cx.notify();
+    }
+
+    #[cfg(feature = "snapshot")]
+    pub fn drop_settle(&mut self) {
+        if let Some(drop) = self.review.as_ref().and_then(|r| r.drop.as_ref()) {
+            drop.settle();
+        }
+    }
+
     pub(super) fn results(&mut self) -> Option<&mut Results> {
         match &mut self.screen {
             Screen::Results(r) => Some(r),

@@ -23,6 +23,10 @@ pub(super) struct Results {
     /// Staged for the Trash (the "cleanup plan"): top-level nodes only, never
     /// one inside another.
     pub(super) collector: Vec<usize>,
+    /// What every checkbox shows, worked out once per plan rather than per
+    /// row: rows ask on every frame, and walking each staged node's ancestry
+    /// for each of them made a big plan lag. See `tick`.
+    pub(super) tick_index: std::cell::RefCell<Option<TickIndex>>,
     pub(super) list_scroll: UniformListScrollHandle,
     /// The focused folder's children in list order (`sort`); the chart keeps size order.
     pub(super) order: Vec<usize>,
@@ -228,6 +232,7 @@ impl Results {
             anim_start: clock::now(),
             chart_bounds: Rc::default(),
             collector: Vec::new(),
+            tick_index: Default::default(),
             list_scroll: UniformListScrollHandle::new(),
             order: Vec::new(),
             sort,
@@ -552,15 +557,28 @@ impl Results {
             && !self.homes.contains(&ix)
     }
 
-    /// What the checkbox on `ix` shows.
+    /// What the checkbox on `ix` shows: on if staged, implied if a folder
+    /// above it is, mixed if something below it is.
     pub(super) fn tick(&self, ix: usize) -> Tick {
-        if self.collector.contains(&ix) {
+        let mut cache = self.tick_index.borrow_mut();
+        // The plan is changed in place from several places, so the cache
+        // checks it hasn't moved on rather than trusting to be told.
+        let fresh = cache.as_ref().is_some_and(|t| t.matches(&self.tree, &self.collector));
+        if !fresh {
+            *cache = Some(TickIndex::new(&self.tree, &self.collector));
+        }
+        let index = cache.as_ref().expect("just built");
+        if index.staged.contains(&ix) {
             return Tick::On;
         }
-        if self.collector.iter().any(|&c| self.tree.is_ancestor_or_self(c, ix)) {
-            return Tick::Implied;
+        let mut up = self.tree.nodes[ix].parent;
+        while let Some(p) = up {
+            if index.staged.contains(&p) {
+                return Tick::Implied;
+            }
+            up = self.tree.nodes[p].parent;
         }
-        if self.collector.iter().any(|&c| self.tree.is_ancestor_or_self(ix, c)) {
+        if index.above.contains(&ix) {
             return Tick::Mixed;
         }
         Tick::Off
@@ -706,4 +724,38 @@ pub(super) fn home_folders(tree: &Tree) -> Vec<usize> {
         level = next;
     }
     homes
+}
+
+/// The plan, indexed for `Results::tick`: the staged nodes, and every folder
+/// above one of them.
+pub(super) struct TickIndex {
+    tree: *const Tree,
+    nodes: usize,
+    plan: Vec<usize>,
+    staged: HashSet<usize>,
+    above: HashSet<usize>,
+}
+
+impl TickIndex {
+    fn new(tree: &Arc<Tree>, plan: &[usize]) -> Self {
+        let staged: HashSet<usize> = plan.iter().copied().collect();
+        let mut above = HashSet::new();
+        for &c in plan {
+            let mut up = tree.nodes[c].parent;
+            while let Some(p) = up {
+                // Already walked from here up by an earlier sibling.
+                if !above.insert(p) {
+                    break;
+                }
+                up = tree.nodes[p].parent;
+            }
+        }
+        TickIndex { tree: Arc::as_ptr(tree), nodes: tree.nodes.len(), plan: plan.to_vec(), staged, above }
+    }
+
+    /// Built from this tree and this plan. A plan compare is a memcmp, far
+    /// cheaper than the ancestry walks it saves.
+    fn matches(&self, tree: &Arc<Tree>, plan: &[usize]) -> bool {
+        self.tree == Arc::as_ptr(tree) && self.nodes == tree.nodes.len() && self.plan == plan
+    }
 }

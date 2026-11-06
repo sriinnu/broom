@@ -191,7 +191,7 @@ impl Broom {
                     .text_color(rgb(colors().muted))
                     .cursor_pointer()
                     .hover(|s| s.bg(rgb(colors().border)).text_color(rgb(colors().text)))
-                    .child("⎘")
+                    .child(icons::inline_symbol(icons::Symbol::DocOnDoc, 13.))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click({
                         let here = here.clone();

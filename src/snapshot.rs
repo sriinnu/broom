@@ -302,6 +302,10 @@ enum Step {
     ShowPointer,
     /// Play back this many times slower from here on (1 for real time).
     SlowMotion(f64),
+    /// The review card mid-move with this many items falling in; nothing is trashed.
+    DropDemo(usize),
+    /// The demo move finishing: the lid may close.
+    DropSettle,
     Quit,
 }
 
@@ -322,6 +326,8 @@ fn parse(script: &str) -> Vec<Step> {
                 "hide-pointer" => Step::HidePointer,
                 "show-pointer" => Step::ShowPointer,
                 "slow-motion" => Step::SlowMotion(num(1).max(1.0)),
+                "drop-demo" => Step::DropDemo(num(1).max(1.0) as usize),
+                "drop-settle" => Step::DropSettle,
                 "quit" => Step::Quit,
                 other => {
                     eprintln!("video: unknown step {other:?}");
@@ -492,6 +498,12 @@ async fn record(this: WeakEntity<Broom>, output: String, script: String, cx: &mu
             Step::HidePointer => recorder.shown_pointer = false,
             Step::ShowPointer => recorder.shown_pointer = true,
             Step::SlowMotion(factor) => recorder.frame_time = 1.0 / (FPS * factor),
+            Step::DropDemo(count) => {
+                this.update(cx, |broom, cx| broom.demo_drop(count, cx)).ok();
+            }
+            Step::DropSettle => {
+                this.update(cx, |broom, _| broom.drop_settle()).ok();
+            }
             Step::Quit => break,
         }
     }

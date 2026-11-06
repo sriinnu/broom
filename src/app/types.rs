@@ -53,7 +53,7 @@ impl Pane {
 }
 
 /// What a row's checkbox shows about staging.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Tick {
     Off,
     /// Staged itself.

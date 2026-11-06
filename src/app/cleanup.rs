@@ -29,7 +29,7 @@ impl Broom {
         .detach();
     }
 
-    /// "Review & move to Trash": open the review card over the staged list.
+    /// "Review and Move to Trash…": open the review card over the staged list.
     pub(super) fn open_review(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.modal.is_some() {
             return;
@@ -508,7 +508,7 @@ impl Broom {
             )
             .child(
                 div().flex_none().p_3().child(
-                    primary_button("trash", "Review & move to Trash", colors().danger)
+                    primary_button("trash", "Review and Move to Trash…", colors().danger)
                         .w_full()
                         .text_center()
                         .when(empty, |b| b.opacity(0.45).cursor_default())

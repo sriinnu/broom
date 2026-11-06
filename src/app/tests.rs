@@ -644,3 +644,55 @@ mod column_tests {
         assert_eq!(fit_columns([360.0, 680.0, 560.0], 400.0), [150.0, 220.0, 240.0]);
     }
 }
+
+#[cfg(test)]
+mod tick_tests {
+    use super::*;
+
+    /// The definition `tick` had before it was indexed, kept as the oracle.
+    fn naive(r: &Results, ix: usize) -> Tick {
+        if r.collector.contains(&ix) {
+            Tick::On
+        } else if r.collector.iter().any(|&c| r.tree.is_ancestor_or_self(c, ix)) {
+            Tick::Implied
+        } else if r.collector.iter().any(|&c| r.tree.is_ancestor_or_self(ix, c)) {
+            Tick::Mixed
+        } else {
+            Tick::Off
+        }
+    }
+
+    #[test]
+    fn indexed_ticks_match_the_definition_as_the_plan_changes() {
+        let root = std::env::temp_dir().join(format!("broom-tick-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for rel in ["a/x/1.bin", "a/x/2.bin", "a/y/3.bin", "b/z/w/4.bin", "b/5.bin", "c/6.bin"] {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, vec![7u8; 4096]).unwrap();
+        }
+        let tree = scan::scan(&root, &scan::Progress::default(), &[], settings::Settings::default().outline_depth);
+        let mut r = Results::new(tree.clone(), Vec::new(), Duration::ZERO, root.clone(), ColorBy::Folder, SortBy::Size, true, false);
+        let all: Vec<usize> = (0..r.tree.nodes.len()).collect();
+        let check = |r: &Results| {
+            for &ix in &all {
+                assert_eq!(r.tick(ix), naive(r, ix), "node {ix} with plan {:?}", r.collector);
+            }
+        };
+        check(&r);
+        // Stage, unstage and restage in an order that hits every state, the
+        // way the UI does: some through `collect`, some by editing in place.
+        for &ix in all.iter().rev() {
+            r.collect(ix);
+            check(&r);
+        }
+        let first = r.collector[0];
+        r.collector.retain(|&c| c != first);
+        check(&r);
+        for &ix in &all {
+            r.toggle_staged(ix);
+            check(&r);
+        }
+        std::fs::remove_dir_all(&root).ok();
+    }
+}

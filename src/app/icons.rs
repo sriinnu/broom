@@ -11,7 +11,7 @@ use gpui::{FillOptions, FillRule, Hsla, PathBuilder, PathStyle};
 
 /// The symbols the toolbar uses, named as in SF Symbols.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Symbol {
+pub(crate) enum Symbol {
     ChevronLeft,
     ChevronRight,
     ArrowUp,
@@ -20,6 +20,10 @@ pub(super) enum Symbol {
     SidebarLeft { shown: bool },
     /// `sidebar.right`, the cleanup column's mirror of the above.
     SidebarRight { shown: bool },
+    /// `doc.on.doc`: Copy Path on a row.
+    DocOnDoc,
+    /// `magnifyingglass`: Reveal in Finder on a row, as Safari's downloads have it.
+    Magnifier,
 }
 
 /// SF Symbols' regular weight at 16 pt is about a 1.5 pt line.
@@ -34,6 +38,17 @@ pub(super) fn symbol(symbol: Symbol, color: Hsla) -> impl IntoElement {
     canvas(|_, _, _| {}, move |bounds, _, window, _| paint(symbol, color, bounds, window))
         .size(px(16.))
         .flex_none()
+}
+
+/// A symbol `size` pixels square in the text colour around it, so a hover
+/// that brightens a button's text brightens its icon too.
+pub(crate) fn inline_symbol(symbol: Symbol, size: f32) -> impl IntoElement {
+    canvas(|_, _, _| {}, move |bounds, _, window, _| {
+        let color = window.text_style().color;
+        paint(symbol, color, bounds, window)
+    })
+    .size(px(size))
+    .flex_none()
 }
 
 fn paint(symbol: Symbol, color: Hsla, bounds: Bounds<Pixels>, window: &mut Window) {
@@ -53,6 +68,30 @@ fn paint(symbol: Symbol, color: Hsla, bounds: Bounds<Pixels>, window: &mut Windo
         ),
         Symbol::SidebarLeft { shown } => sidebar(true, shown, &at, scale, color, window),
         Symbol::SidebarRight { shown } => sidebar(false, shown, &at, scale, color, window),
+        Symbol::DocOnDoc => {
+            // The front page whole, the back one only where it shows: an
+            // L along the top and left, as SF Symbols draws it.
+            let mut front = PathBuilder::stroke(px(OUTLINE * scale));
+            rounded_rect(&mut front, &at, (5.5, 5.0, 13.5, 14.5), [1.75; 4]);
+            if let Ok(path) = front.build() {
+                window.paint_path(path, color);
+            }
+            strokes(&[&[(3.0, 10.5), (3.0, 3.75), (3.75, 2.25), (9.5, 2.25), (10.75, 3.0)]], OUTLINE * scale, &at, color, window);
+        }
+        Symbol::Magnifier => {
+            let mut lens = PathBuilder::stroke(px(STROKE * scale));
+            let (cx, cy, r) = (6.75, 6.75, 4.5);
+            for i in 0..=32 {
+                let t = std::f32::consts::TAU * i as f32 / 32.0;
+                let p = at(cx + r * t.cos(), cy + r * t.sin());
+                if i == 0 { lens.move_to(p) } else { lens.line_to(p) }
+            }
+            lens.close();
+            if let Ok(path) = lens.build() {
+                window.paint_path(path, color);
+            }
+            strokes(&[&[(10.1, 10.1), (13.75, 13.75)]], STROKE * 1.2 * scale, &at, color, window);
+        }
     }
 }
 
