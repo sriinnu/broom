@@ -15,8 +15,7 @@ impl Broom {
 
     /// Escape in the field: clear it, hand focus back to the chart, and drop the ask state.
     pub(super) fn dismiss_query(&mut self, _: &DismissQuery, window: &mut Window, cx: &mut Context<Self>) {
-        // The binding sits at EditableText depth, so this also fires from Settings
-        // fields — where escape should close the modal instead.
+        // With the Help / About card up, Escape closes the card instead.
         if self.modal.is_some() {
             self.close_modal(window, cx);
             return;
@@ -65,11 +64,10 @@ impl Broom {
     /// Enter in the field: ask the providers what the query means, then act on it.
     /// A delete answer pre-selects the Collector; nothing is ever trashed from the
     /// answer alone.
-    pub(super) fn submit_query(&mut self, _: &SubmitQuery, window: &mut Window, cx: &mut Context<Self>) {
-        // Enter lives at EditableText depth, so it fires from Settings fields too —
-        // there it means "check" or "save", never "ask".
+    pub(super) fn submit_query(&mut self, _: &SubmitQuery, _: &mut Window, cx: &mut Context<Self>) {
+        // Not under the Help / About card. (Enter in a Settings field never
+        // gets here: the Settings window handles it; see `SettingsWindow`.)
         if self.modal.is_some() {
-            self.settings_enter(window, cx);
             return;
         }
         let query = self.query.read(cx).as_str().trim().to_string();

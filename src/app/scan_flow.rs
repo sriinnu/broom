@@ -2,6 +2,12 @@
 
 use super::*;
 
+/// Show kept trees and catch up from FSEvents. Off for the recorder, whose
+/// scripts expect a live scan, and with `BROOM_NO_CACHE` for a forced full read.
+pub(super) fn use_cache() -> bool {
+    !cfg!(feature = "snapshot") && std::env::var_os("BROOM_NO_CACHE").is_none()
+}
+
 impl Broom {
     /// The banner's "Put back": move the last batch out of the Trash, then
     /// re-read just the folders they went back into.
@@ -12,6 +18,10 @@ impl Broom {
             return;
         }
         r.banner = None;
+        // What the lifetime tally counted for this batch, to take back for
+        // whatever actually comes out of the Trash.
+        let swept = r.freed.take().map(|f| f.bytes).unwrap_or(0);
+        let sent = landed.len();
         let scan_id = r.scan_id;
         let (excludes, outline_depth) = (self.settings.exclude_paths(), self.settings.outline_depth);
         cx.spawn(async move |this, cx| {
@@ -46,6 +56,9 @@ impl Broom {
                 }
                 if recompute {
                     this.collector_changed(cx);
+                }
+                if sent > 0 && !restored.is_empty() {
+                    delight::record_put_back((swept as u128 * restored.len() as u128 / sent as u128) as u64);
                 }
                 let what = if restored.len() == 1 { "1 item".to_string() } else { format!("{} items", restored.len()) };
                 this.show_banner(Some(format!("Put {what} back where it was.")), cx);
@@ -238,16 +251,42 @@ impl Broom {
             let root_for_results = root.clone();
             let excludes = excludes.clone();
             async move |this, cx| {
-                let (tree, findings) = cx
+                // The last scan of this root, kept on disk, goes on screen at once; the
+                // disk is read (or caught up from FSEvents) behind it.
+                if use_cache() {
+                    let cached = cx
+                        .background_spawn({
+                            let (root, excludes) = (root.clone(), excludes.clone());
+                            async move {
+                                let (meta, tree) = cache::load(&root)?;
+                                if meta.excludes != cache::excludes_key(&excludes) {
+                                    return None;
+                                }
+                                let findings = findings::from_tree(&tree, &findings::Bases::for_root(&tree.root_path));
+                                Some((meta.taken, tree, findings))
+                            }
+                        })
+                        .await;
+                    if let Some((taken, tree, findings)) = cached {
+                        this.update(cx, |this, cx| {
+                            if !progress.cancelled.load(Ordering::Relaxed) {
+                                this.show_cached(tree, findings, taken, root_for_results.clone(), cx);
+                            }
+                        })
+                        .ok();
+                        return;
+                    }
+                }
+                let (tree, meta, findings) = cx
                     .background_spawn({
                         let progress = progress.clone();
                         let excludes = excludes.clone();
                         async move {
-                            let tree = scan::scan(&root, &progress, &excludes, outline_depth);
+                            let (tree, meta) = refresh::full_scan(&root, &progress, &excludes, outline_depth);
                             // May survey clone sharing (e.g. pnpm's cloned node_modules), so
                             // keep it off the UI thread.
                             let findings = findings::from_tree(&tree, &findings::Bases::for_root(&tree.root_path));
-                            (tree, findings)
+                            (tree, meta, findings)
                         }
                     })
                     .await;
@@ -272,8 +311,10 @@ impl Broom {
                         }
                         // The chart is already on screen from the scan; don't replay the sweep.
                         results.anim_start = clock::now() - ZOOM_DURATION;
-                        let (tree, scan_id) = (results.tree.clone(), results.scan_id);
+                        let (tree, scan_id, elapsed) = (results.tree.clone(), results.scan_id, results.elapsed);
                         this.screen = Screen::Results(results);
+                        let kept = tree.clone();
+                        cx.background_spawn(async move { refresh::store(&meta, &kept, refresh::How::Full, elapsed) }).detach();
                         this.resolve_pending_findings(cx);
                         this.compare_with_history(tree.clone(), scan_id, cx);
                         this.find_duplicates(tree, scan_id, cx);
@@ -349,6 +390,8 @@ impl Broom {
         let Some(r) = self.results() else { return };
         r.banner = Some(clock::now());
         r.banner_text = text;
+        // A Trash banner sets this again right after; every other banner is plain.
+        r.freed = None;
         r.banner_version += 1;
         let version = r.banner_version;
         cx.spawn(async move |this, cx| {
@@ -361,6 +404,7 @@ impl Broom {
                     if r.banner_version == version {
                         r.banner = None;
                         r.banner_text = None;
+                        r.freed = None;
                         r.last_trashed.clear();
                         cx.notify();
                     }
@@ -394,6 +438,15 @@ impl Broom {
     }
 
     pub(super) fn rescan(&mut self, _: &Rescan, _: &mut Window, cx: &mut Context<Self>) {
+        // With a kept tree to catch up from, the results stay on screen and refresh
+        // in place: a second or so instead of a full walk.
+        if let Screen::Results(r) = &self.screen {
+            let excludes = cache::excludes_key(&self.settings.exclude_paths());
+            if use_cache() && cache::peek(&r.requested_root).is_some_and(|m| m.event_id != 0 && m.excludes == excludes) {
+                self.refresh_in_place(cx);
+                return;
+            }
+        }
         let root = match &self.screen {
             Screen::Results(r) => r.requested_root.clone(),
             Screen::Scanning(s) => s.root.clone(),
@@ -401,6 +454,111 @@ impl Broom {
         };
         self.cancel_scan(cx);
         self.start_scan(root, cx);
+    }
+
+    /// ⇧⌘R: read everything again from the disk, ignoring the kept tree, for
+    /// when the quick catch-up is in doubt.
+    pub(super) fn full_rescan(&mut self, _: &FullRescan, _: &mut Window, cx: &mut Context<Self>) {
+        let root = match &self.screen {
+            Screen::Results(r) => r.requested_root.clone(),
+            Screen::Scanning(s) => s.root.clone(),
+            Screen::Start => return,
+        };
+        self.cancel_scan(cx);
+        self.start_scan(root, cx);
+    }
+
+    /// Put a tree kept from an earlier scan on screen, labelled with its age, and
+    /// start bringing it up to date.
+    pub(super) fn show_cached(&mut self, tree: Tree, findings: Vec<Finding>, taken: SystemTime, root: PathBuf, cx: &mut Context<Self>) {
+        let root_str = root.to_string_lossy().into_owned();
+        let mut results = Results::new(tree, findings, Duration::ZERO, root, self.color_by, self.sort, self.sort_descending, self.show_modified);
+        results.show_created = self.settings.show_created;
+        results.refresh = Some(Refresh { from: Some(taken), running: false, cancel: Arc::default(), _task: None });
+        refresh::log(&format!("showing the kept tree ({} nodes), {}", results.tree.nodes.len(), results.status_line()));
+        // No clone surveys, history record or duplicate search for a tree that is
+        // about to be replaced: those run on the fresh one.
+        self.screen = Screen::Results(results);
+        self.settings.last_root = Some(root_str);
+        let _ = settings::save(&self.settings);
+        self.refresh_in_place(cx);
+        cx.notify();
+    }
+
+    /// Read the disk again for the tree on screen, in the background: caught up
+    /// from FSEvents when the kept tree allows, else a full walk. The result
+    /// replaces the tree on screen without losing the user's place.
+    pub(super) fn refresh_in_place(&mut self, cx: &mut Context<Self>) {
+        let (excludes, outline_depth) = (self.settings.exclude_paths(), self.settings.outline_depth);
+        let Some(r) = self.results() else { return };
+        if r.refresh.as_ref().is_some_and(|f| f.running) {
+            return;
+        }
+        let (root, scan_id) = (r.requested_root.clone(), r.scan_id);
+        let cancel = Arc::new(Progress::default());
+        let task = cx.spawn({
+            let cancel = cancel.clone();
+            async move |this, cx| {
+                let (fresh, findings) = cx
+                    .background_spawn(async move {
+                        let fresh = refresh::refresh(&root, &excludes, outline_depth, &cancel);
+                        let findings = findings::from_tree(&fresh.tree, &findings::Bases::for_root(&fresh.tree.root_path));
+                        (fresh, findings)
+                    })
+                    .await;
+                // A review card or a move to the Trash in flight holds node numbers of
+                // the tree on screen; swap only once it's done with them.
+                loop {
+                    match this.update(cx, |this, _| this.review.is_some()) {
+                        Ok(false) => break,
+                        Ok(true) => cx.background_executor().timer(Duration::from_millis(300)).await,
+                        Err(_) => return,
+                    }
+                }
+                this.update(cx, |this, cx| this.swap_in(scan_id, fresh, findings, cx)).ok();
+            }
+        });
+        let from = r.refresh.as_ref().and_then(|f| f.from);
+        r.refresh = Some(Refresh { from, running: true, cancel, _task: Some(task) });
+        cx.notify();
+    }
+
+    /// The refreshed tree replaces the one on screen (if it's still the one the
+    /// refresh was for), keeping the user's place by path.
+    fn swap_in(&mut self, scan_id: u64, fresh: refresh::Fresh, findings: Vec<Finding>, cx: &mut Context<Self>) {
+        if !matches!(&self.screen, Screen::Results(r) if r.scan_id == scan_id) {
+            return;
+        }
+        let Screen::Results(old) = std::mem::replace(&mut self.screen, Screen::Start) else { return };
+        let refresh::Fresh { tree, meta, how, elapsed } = fresh;
+        let mut results = Results::new(tree, findings, elapsed, old.requested_root.clone(), self.color_by, old.sort, old.descending, old.show_modified);
+        results.show_created = old.show_created;
+        results.caught_up = matches!(how, refresh::How::CaughtUp { .. });
+        results.carry_over_from(&old);
+        // The chart is already on screen; no sweep for a refresh.
+        results.anim_start = clock::now() - ZOOM_DURATION;
+        refresh::log(&format!(
+            "swapped in ({:?}) after {:.2}s, focus {} -> {}",
+            how,
+            elapsed.as_secs_f64(),
+            old.tree.path_of(old.focus).display(),
+            results.tree.path_of(results.focus).display()
+        ));
+        drop(old);
+        self.context_menu = None;
+        let (tree, scan_id, staged) = (results.tree.clone(), results.scan_id, !results.collector.is_empty());
+        self.screen = Screen::Results(results);
+        let kept = tree.clone();
+        cx.background_spawn(async move { refresh::store(&meta, &kept, how, elapsed) }).detach();
+        self.resolve_pending_findings(cx);
+        self.compare_with_history(tree.clone(), scan_id, cx);
+        self.find_duplicates(tree, scan_id, cx);
+        if staged {
+            self.collector_changed(cx);
+        }
+        // Search results pointed into the old tree; ask again on the new one.
+        self.query_changed(cx);
+        cx.notify();
     }
 
     pub(super) fn start_over(&mut self, _: &StartOver, _: &mut Window, cx: &mut Context<Self>) {

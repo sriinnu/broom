@@ -34,8 +34,10 @@ pub struct Broom {
     /// Right-click menu, if one is open. Dropped whenever the node it points at is
     /// detached or the scan changes underneath it.
     pub(super) context_menu: Option<ContextMenu>,
-    /// The open modal card, if any.
+    /// The open modal card (Help, About), if any.
     pub(super) modal: Option<PanelState>,
+    /// The Settings window's state, while that window is open.
+    pub(super) prefs: Option<SettingsPane>,
     /// Focus target while a modal is open, so Escape lands on the card.
     pub(super) modal_focus: FocusHandle,
     /// The menu-bar extra: flower + startup-disk fill, volumes in its menu.
@@ -55,8 +57,9 @@ pub struct Broom {
     /// every change; the live copy is the truth while the app runs.
     pub(super) settings: Settings,
     /// Set when a damaged settings file had to be moved aside at startup, so
-    /// the Settings panel can say so once instead of the app silently
-    /// forgetting everything the user had set up.
+    /// the Settings window can say so once instead of the app silently
+    /// forgetting everything the user had set up. Handed to the first
+    /// Settings session (see `begin_settings`).
     pub(super) settings_salvaged: Option<PathBuf>,
 }
 
@@ -77,7 +80,7 @@ impl Render for Broom {
             .flex()
             .children((!self.rail_hidden()).then(|| self.render_rail(cx)))
             .child(div().flex_1().min_w_0().h_full().flex().child(content))
-            .child(self.render_cleanup(cx));
+            .children((!self.cleanup_hidden()).then(|| self.render_cleanup(cx)));
 
         // A menu is only rendered while its node is still part of the tree.
         let menu = match (&self.screen, &self.context_menu) {
@@ -97,12 +100,14 @@ impl Render for Broom {
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::open_folder))
             .on_action(cx.listener(Self::rescan))
+            .on_action(cx.listener(Self::full_rescan))
             .on_action(cx.listener(Self::start_over))
             .on_action(cx.listener(Self::go_up))
             .on_action(cx.listener(Self::focus_query))
             .on_action(cx.listener(Self::submit_query))
             .on_action(cx.listener(Self::dismiss_query))
-            .on_action(cx.listener(Self::open_settings))
+            // No OpenSettings here: it bubbles to the app-wide handler in
+            // `menus`, which opens the Settings window with Broom not mid-update.
             .on_action(cx.listener(Self::close_settings))
             .on_action(cx.listener(Self::show_about))
             .on_action(cx.listener(Self::close_about))
@@ -119,6 +124,10 @@ impl Render for Broom {
             .on_action(cx.listener(Self::go_back))
             .on_action(cx.listener(Self::go_forward))
             .on_action(cx.listener(Self::toggle_rail))
+            .on_action(cx.listener(Self::toggle_cleanup))
+            .on_action(cx.listener(Self::close_window))
+            .on_action(cx.listener(Self::minimize))
+            .on_action(cx.listener(Self::zoom))
             .on_action(cx.listener(Self::select_all))
             .size_full()
             .flex()
@@ -127,7 +136,7 @@ impl Render for Broom {
             .text_color(rgb(colors().text))
             .font_family(theme::current().font)
             .text_sm()
-            .child(self.render_toolbar(cx))
+            .child(self.render_toolbar(window, cx))
             .child(body)
             // Any click outside the menu closes it (the menu stops this handler).
             .on_mouse_down(MouseButton::Left, cx.listener(close_menu_on_outside))
@@ -194,6 +203,7 @@ impl Broom {
             query: cx.new(|cx| EditableTextState::new(StringStorage::default(), cx)),
             context_menu: None,
             modal: None,
+            prefs: None,
             modal_focus: cx.focus_handle(),
             menubar: None,
             _menubar_watch: None,
@@ -229,6 +239,11 @@ impl Broom {
         crate::snapshot::install(window, cx);
         if let Some(path) = initial {
             this.start_scan(path, cx);
+        } else if let Some(last) = this.settings.last_root.clone().map(PathBuf::from) {
+            // A relaunch lands where you were, at once, when that tree was kept.
+            if super::scan_flow::use_cache() && cache::peek(&last).is_some() {
+                this.start_scan(last, cx);
+            }
         }
         this
     }

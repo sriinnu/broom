@@ -1,6 +1,6 @@
 [package]
 name = "broom"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 description = "A fast, exact disk-space explorer for macOS with a live sunburst chart, built with GPUI"
 license = "MIT"
@@ -24,7 +24,7 @@ ureq = { version = "2", default-features = false, features = ["tls", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
-objc2-app-kit = { version = "0.3", features = ["NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSMenu", "NSMenuItem", "NSApplication", "objc2-core-foundation", "NSView", "NSWindow", "NSGraphics", "NSVisualEffectView", "NSScreen", "NSEvent", "NSResponder"] }
+objc2-app-kit = { version = "0.3", features = ["NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSMenu", "NSMenuItem", "NSApplication", "objc2-core-foundation", "NSView", "NSWindow", "NSGraphics", "NSVisualEffectView", "NSScreen", "NSEvent", "NSResponder", "NSWorkspace", "NSAccessibility"] }
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSGeometry", "NSURL", "NSDictionary", "NSError", "NSValue"] }
 

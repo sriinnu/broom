@@ -2,32 +2,82 @@
 
 use super::*;
 
-/// The sidebar's show/hide button: a little window with its left column filled
-/// while the column is there. Drawn, because glyphs for this go through the
-/// emoji path and all but disappear on glass.
-pub(super) fn rail_toggle(hidden: bool, cx: &mut Context<Broom>) -> impl IntoElement {
-    button_base("rail-toggle", "")
-        .bg(rgb(colors().card))
-        .border_color(rgb(colors().border))
-        .hover(|s| s.bg(rgb(colors().card_hover)))
-        .px_2()
+/// A toolbar item as macOS draws one: no border or fill until the pointer is
+/// over it, 28 pt tall like every other control in the bar.
+pub(super) fn tool_button(id: impl Into<gpui::ElementId>) -> Stateful<gpui::Div> {
+    div()
+        .id(id)
         .h(px(28.))
+        .min_w(px(28.))
+        .px_1p5()
         .flex()
+        .flex_none()
         .items_center()
-        .child(
-            div()
-                .w(px(16.))
-                .h(px(12.))
-                .rounded(px(2.))
-                .border_1()
-                .border_color(rgb(colors().muted))
-                .when(!hidden, |d| d.child(div().w(px(5.)).h_full().bg(rgb(colors().muted)))),
-        )
+        .justify_center()
+        .gap_1p5()
+        .rounded(theme::radius(6.))
+        .text_color(rgb(colors().text))
+        .cursor_pointer()
+        .hover(|s| s.bg(rgb(colors().card_hover)))
+        .active(|s| s.opacity(0.8))
+        // Keep clicks from starting a window drag in the toolbar.
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+}
+
+/// A text field's border: the accent while it has the keyboard, as a Mac
+/// field shows its focus ring, else the quiet card border. Without it the
+/// only sign of where typing goes is a thin caret.
+pub(super) fn field_border(field: &Entity<EditableTextState>, window: &Window, cx: &App) -> Hsla {
+    if field.read(cx).focus_handle(cx).is_focused(window) { to_hsla(colors().accent) } else { to_hsla(colors().border) }
+}
+
+/// The symbols' ink: the muted text colour, as Finder's toolbar symbols are
+/// a step quieter than its text.
+fn ink() -> Hsla {
+    to_hsla(colors().muted)
+}
+
+/// The sidebar's show/hide button: `sidebar.left`, its pane filled while the
+/// column is there.
+pub(super) fn rail_toggle(hidden: bool, cx: &mut Context<Broom>) -> impl IntoElement {
+    tool_button("rail-toggle")
+        .child(icons::symbol(icons::Symbol::SidebarLeft { shown: !hidden }, ink()))
         .tooltip(move |_, cx| cx.new(|_| Tip(if hidden { "Show sidebar ⌥⌘S".into() } else { "Hide sidebar ⌥⌘S".into() })).into())
         .on_click(cx.listener(|this, _, window, cx| this.toggle_rail(&ToggleRail, window, cx)))
 }
 
+/// The cleanup column's show/hide button: `sidebar.right`, the rail toggle's
+/// mirror. Hidden with things staged, it says how many, so a plan is never
+/// out of sight and out of mind.
+pub(super) fn cleanup_toggle(hidden: bool, staged: usize, cx: &mut Context<Broom>) -> impl IntoElement {
+    tool_button("cleanup-toggle")
+        .when(hidden && staged > 0, |b| {
+            b.child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(rgb(colors().accent)).child(format!("{staged} staged")))
+        })
+        .child(icons::symbol(icons::Symbol::SidebarRight { shown: !hidden }, ink()))
+        .tooltip(move |_, cx| {
+            cx.new(|_| Tip(if hidden { "Show cleanup column ⌥⌘0".into() } else { "Hide cleanup column ⌥⌘0".into() })).into()
+        })
+        .on_click(cx.listener(|this, _, window, cx| this.toggle_cleanup(&ToggleCleanup, window, cx)))
+}
+
 impl Broom {
+    /// Hide or show the findings and cleanup plan, for more room for the chart
+    /// and the list. Not on the start screen, as with the rail.
+    pub(super) fn toggle_cleanup(&mut self, _: &ToggleCleanup, _: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.screen, Screen::Start) {
+            return;
+        }
+        self.settings.cleanup_collapsed = !self.settings.cleanup_collapsed;
+        let _ = settings::save(&self.settings);
+        self.refresh_menus(cx);
+        cx.notify();
+    }
+
+    pub(super) fn cleanup_hidden(&self) -> bool {
+        self.settings.cleanup_collapsed && !matches!(self.screen, Screen::Start)
+    }
+
     /// Hide or show the disks and folders column. With nothing scanned it's
     /// the only way to start, so there it stays, and the shortcut does nothing.
     pub(super) fn toggle_rail(&mut self, _: &ToggleRail, _: &mut Window, cx: &mut Context<Self>) {
@@ -36,6 +86,7 @@ impl Broom {
         }
         self.settings.rail_collapsed = !self.settings.rail_collapsed;
         let _ = settings::save(&self.settings);
+        self.refresh_menus(cx);
         cx.notify();
     }
 
@@ -43,7 +94,7 @@ impl Broom {
         self.settings.rail_collapsed && !matches!(self.screen, Screen::Start)
     }
 
-    pub(super) fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_toolbar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut bar = div()
             .id("toolbar")
             .h(px(46.))
@@ -72,27 +123,27 @@ impl Broom {
                 let can_go_up = r.tree.nodes[r.focus].parent.is_some();
                 // Dimmed, not hidden: the row keeps its width and the crumbs don't
                 // jump on every move.
+                // Back and Forward are one control, as in Finder: two halves
+                // that share a shape and light up one at a time.
+                let back = tool_button("back")
+                    .w(px(32.))
+                    .rounded_r(px(0.))
+                    .child(icons::symbol(icons::Symbol::ChevronLeft, ink()))
+                    .when(!r.can_travel(Travel::Back), |b| b.opacity(0.4))
+                    .tooltip(|_, cx| cx.new(|_| Tip("Back ⌘[".into())).into())
+                    .on_click(cx.listener(|this, _, window, cx| this.go_back(&GoBack, window, cx)));
+                let forward = tool_button("forward")
+                    .w(px(32.))
+                    .rounded_l(px(0.))
+                    .child(icons::symbol(icons::Symbol::ChevronRight, ink()))
+                    .when(!r.can_travel(Travel::Forward), |b| b.opacity(0.4))
+                    .tooltip(|_, cx| cx.new(|_| Tip("Forward ⌘]".into())).into())
+                    .on_click(cx.listener(|this, _, window, cx| this.go_forward(&GoForward, window, cx)));
                 bar = bar
+                    .child(div().flex().flex_none().items_center().child(back).child(forward))
                     .child(
-                        button("back", "‹")
-                            .text_base()
-                            .px_2()
-                            .when(!r.can_travel(Travel::Back), |b| b.opacity(0.4))
-                            .tooltip(|_, cx| cx.new(|_| Tip("Back ⌘[".into())).into())
-                            .on_click(cx.listener(|this, _, window, cx| this.go_back(&GoBack, window, cx))),
-                    )
-                    .child(
-                        button("forward", "›")
-                            .text_base()
-                            .px_2()
-                            .when(!r.can_travel(Travel::Forward), |b| b.opacity(0.4))
-                            .tooltip(|_, cx| cx.new(|_| Tip("Forward ⌘]".into())).into())
-                            .on_click(cx.listener(|this, _, window, cx| this.go_forward(&GoForward, window, cx))),
-                    )
-                    .child(
-                        button("up", "↑")
-                            .text_base()
-                            .px_2()
+                        tool_button("up")
+                            .child(icons::symbol(icons::Symbol::ArrowUp, ink()))
                             .when(!can_go_up, |b| b.opacity(0.4))
                             .tooltip(|_, cx| cx.new(|_| Tip("Enclosing folder ⌘↑".into())).into())
                             .on_click(cx.listener(|this, _, window, cx| this.go_up(&GoUp, window, cx))),
@@ -167,7 +218,7 @@ impl Broom {
                             .items_center()
                             .rounded(theme::radius(6.))
                             .border_1()
-                            .border_color(rgb(colors().border))
+                            .border_color(field_border(&self.query, window, cx))
                             .bg(rgb(colors().bg))
                             .text_size(px(12.))
                             // One line as tall as the field inside its border: the element draws
@@ -178,19 +229,18 @@ impl Broom {
                 bar = bar
                     .child(color_toggle(r.color_by, cx))
                     .child(
-                        div().text_xs().text_color(rgb(colors().muted)).flex_none().child(format!(
-                            "Scanned in {:.1}s",
-                            r.elapsed.as_secs_f32()
-                        )),
+                        div().text_xs().text_color(rgb(colors().muted)).flex_none().child(r.status_line()),
                     )
                     .child(
-                        button("rescan", "Rescan")
+                        tool_button("rescan")
+                            .px_2()
+                            .child("Rescan")
                             .on_click(cx.listener(|this, _, window, cx| this.rescan(&Rescan, window, cx))),
                     );
             }
             Screen::Scanning(_) => {
                 bar = bar.child(div().flex_1()).child(
-                    primary_button("cancel", "Cancel Scan", colors().danger).on_click(cx.listener(|this, _, _, cx| this.cancel_scan(cx))),
+                    primary_button("cancel", "Cancel Scan", colors().danger).h(px(28.)).flex().items_center().on_click(cx.listener(|this, _, _, cx| this.cancel_scan(cx))),
                 );
             }
             // Nothing scanned: the rail is the call to action; up here only the
@@ -199,11 +249,23 @@ impl Broom {
         }
         // Settings is reachable from every screen. A word, not a gear glyph:
         // "⚙" renders through the emoji path and all but disappears on glass.
-        bar.child(div().flex_1()).child(
-            button("settings", "Settings")
-                .on_click(cx.listener(|this, _, window, cx| this.open_settings(&OpenSettings, window, cx)))
+        // A plain App handler, not a listener: opening the window reads Broom,
+        // which must not be mid-update then.
+        let bar = bar.child(div().flex_1()).child(
+            tool_button("settings")
+                .px_2()
+                .child("Settings")
+                .on_click(|_, _, cx| open_settings_window(cx))
                 .tooltip(move |_, cx| cx.new(|_| Tip("Settings ⌘,".into())).into()),
-        )
+        );
+        if matches!(self.screen, Screen::Start) {
+            return bar;
+        }
+        let staged = match &self.screen {
+            Screen::Results(r) => r.collector.len(),
+            _ => 0,
+        };
+        bar.child(cleanup_toggle(self.cleanup_hidden(), staged, cx))
     }
 
     /// The left rail: every disk with its fill, the home folder, synced cloud
@@ -303,7 +365,7 @@ impl Broom {
         }
         list = list.child(
             div().px_3().pt_3().child(
-                button("choose", "Choose folder…")
+                button("choose", "Choose Folder…")
                     .w_full()
                     .text_center()
                     .on_click(cx.listener(|this, _, window, cx| this.open_folder(&OpenFolder, window, cx)))

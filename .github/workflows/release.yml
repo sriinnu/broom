@@ -11,7 +11,7 @@ permissions:
   contents: read
 jobs:
   release:
-    runs-on: macos-14
+    runs-on: macos-15
     # A signing step waiting on a keychain prompt would otherwise sit for six hours.
     timeout-minutes: 60
     permissions:

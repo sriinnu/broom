@@ -6,8 +6,10 @@ mod api_keys;
 mod broom;
 mod chart;
 mod cleanup;
+mod icons;
 mod lifecycle;
 mod live_view;
+mod menus;
 mod modals;
 mod navigation;
 mod navigator;
@@ -17,6 +19,7 @@ mod results;
 mod scan_flow;
 mod scanning;
 mod settings_panel;
+mod settings_window;
 mod toolbar;
 mod types;
 mod widgets;
@@ -53,10 +56,13 @@ use objc2_app_kit::{
 };
 use palette::IntoColor;
 
+use crate::cache;
+use crate::refresh;
 use crate::ask::{self, CandidateGroup, Intent, ProviderError, Understanding};
 use crate::classify::{self, CATEGORIES, Category};
 use crate::clock;
 use crate::comic;
+use crate::delight;
 use crate::disk;
 use crate::eta;
 use crate::onboarding;
@@ -78,12 +84,16 @@ actions!(broom, [
     OpenSettings, CloseSettings, About, CloseAbout,
     SelectNext, SelectPrev, OpenSelected, ToggleStaged, CloseReview, CopyPath, CopyRelativePath,
     SortBySize, SortByName, SortByModified,
-    GoBack, GoForward, ToggleRail, SelectAll
+    GoBack, GoForward, ToggleRail, ToggleCleanup, SelectAll, FullRescan
 ]);
 
 pub use self::broom::*;
 use self::chart::*;
 pub use self::lifecycle::*;
+pub use self::menus::*;
+use self::modals::*;
+pub use self::settings_window::*;
+use self::toolbar::*;
 use self::live_view::*;
 #[cfg(test)]
 use self::navigator::*;

@@ -34,7 +34,8 @@ impl Broom {
     pub(super) fn fit_widths(&mut self, window: &Window) {
         let room: f32 = window.viewport_size().width.into();
         let rail = if self.rail_hidden() { 0.0 } else { self.rail_width };
-        self.fitted = fit_columns([rail, self.nav_width, self.cleanup_width], room);
+        let cleanup = if self.cleanup_hidden() { 0.0 } else { self.cleanup_width };
+        self.fitted = fit_columns([rail, self.nav_width, cleanup], room);
     }
 
     pub(super) fn set_pane_width(&mut self, pane: Pane, width: f32) {

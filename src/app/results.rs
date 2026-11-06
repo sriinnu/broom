@@ -80,8 +80,13 @@ pub(super) struct Results {
     pub(super) banner_text: Option<String>,
     pub(super) banner_version: u64,
     /// What the last move to the Trash sent where (original, now), for the
-    /// banner's "Put back". Cleared with the banner.
+    /// banner's "Put Back". Cleared with the banner.
     pub(super) last_trashed: Vec<(PathBuf, PathBuf)>,
+    /// When the banner is a move to the Trash: what it freed, for the count-up
+    /// and the comparison. Cleared by any other banner.
+    pub(super) freed: Option<Freed>,
+    /// Dust drifting off where the trashed slices were, for a moment.
+    pub(super) dust: Option<Rc<delight::Puff>>,
     pub(super) color_by: ColorBy,
     /// What each node is, for colouring by kind. Filled in as nodes appear in the chart;
     /// node indices stay valid for the life of the tree, so nothing is classified twice.
@@ -98,9 +103,98 @@ pub(super) struct Results {
     /// Bumped whenever the query text changes, so a slow background search for older
     /// text is dropped when it lands.
     pub(super) search_version: u64,
+    /// Shown from the last session's cache, or being refreshed in place.
+    pub(super) refresh: Option<Refresh>,
+    /// This tree was caught up from FSEvents rather than read in full.
+    pub(super) caught_up: bool,
+}
+
+/// A refresh of the tree on screen: the disk is read (or caught up from
+/// FSEvents) in the background and the result swapped in when it lands.
+pub(super) struct Refresh {
+    /// When the tree on screen was taken, if it came from the cache rather
+    /// than from this session's own scan.
+    pub(super) from: Option<SystemTime>,
+    /// The refresh is under way.
+    pub(super) running: bool,
+    /// Tells a full walk behind the refresh to stop when this one is dropped
+    /// (another root picked, Start Over).
+    pub(super) cancel: Arc<Progress>,
+    pub(super) _task: Option<Task<()>>,
+}
+
+impl Drop for Refresh {
+    fn drop(&mut self) {
+        self.cancel.cancelled.store(true, Ordering::Relaxed);
+    }
+}
+
+/// A move to the Trash, as the banner tells it.
+pub(super) struct Freed {
+    pub(super) bytes: u64,
+    pub(super) items: usize,
+    /// The lifetime milestone this cleanup carried the tally past, if any.
+    pub(super) milestone: Option<u64>,
 }
 
 impl Results {
+    /// The toolbar's word on where the tree on screen came from: "Scanned in
+    /// 39.9s", "Updated in 0.4s" after a catch-up, "From 5m ago" for a cached
+    /// tree, with "· refreshing…" while a refresh runs behind it.
+    pub(super) fn status_line(&self) -> String {
+        let seconds = self.elapsed.as_secs_f32();
+        let base = match self.refresh.as_ref().and_then(|f| f.from) {
+            Some(taken) => match format_age(taken).as_str() {
+                "now" => "From just now".to_string(),
+                age => format!("From {age} ago"),
+            },
+            None if self.caught_up => format!("Updated in {seconds:.1}s"),
+            None => format!("Scanned in {seconds:.1}s"),
+        };
+        if self.refresh.as_ref().is_some_and(|f| f.running) { format!("{base} · refreshing…") } else { base }
+    }
+
+    /// Pick up where the user was in `old`, a tree of the same root this one
+    /// replaces: the focused folder (or the nearest one above it that's still
+    /// there), the history, the cursor, the picked rows and the cleanup plan.
+    /// Node numbers mean nothing across trees, so everything goes by path, and
+    /// whatever no longer exists is dropped.
+    pub(super) fn carry_over_from(&mut self, old: &Results) {
+        let map = |ix: usize| -> Option<usize> {
+            let attached = ix == Tree::ROOT || old.tree.nodes.get(ix)?.parent.is_some();
+            if !attached {
+                return None;
+            }
+            self.tree.find(&old.tree.path_of(ix))
+        };
+        let focus = old
+            .tree
+            .ancestry(old.focus)
+            .into_iter()
+            .rev()
+            .find_map(|ix| map(ix).filter(|&n| self.tree.nodes[n].kind == Kind::Dir))
+            .unwrap_or(Tree::ROOT);
+        let back: Vec<usize> = old.back.iter().filter_map(|&ix| map(ix)).collect();
+        let fwd: Vec<usize> = old.fwd.iter().filter_map(|&ix| map(ix)).collect();
+        let selected = old.selected.and_then(map);
+        let picked: HashSet<usize> = old.picked.iter().filter_map(|&ix| map(ix)).collect();
+        let collector: Vec<usize> = old.collector.iter().filter_map(|&ix| map(ix)).collect();
+        self.focus = focus;
+        self.back = back;
+        self.fwd = fwd;
+        self.selected = selected;
+        self.picked = picked;
+        self.collector_frees.set(if collector.is_empty() { Some(0) } else { None });
+        self.collector = collector;
+        self.list_scroll = old.list_scroll.clone();
+        self.banner = old.banner;
+        self.banner_text = old.banner_text.clone();
+        self.banner_version = old.banner_version;
+        self.last_trashed = old.last_trashed.clone();
+        self.legend_hover = old.legend_hover;
+        self.relayout();
+    }
+
     /// After the tree changed under the lists (nodes detached or grafted): drop
     /// everything that pointed into it and start the chart's settle animation.
     /// Returns whether the cleanup plan still has items, so its "frees" figure
@@ -161,6 +255,8 @@ impl Results {
             banner_text: None,
             banner_version: 0,
             last_trashed: Vec::new(),
+            freed: None,
+            dust: None,
             color_by,
             categories: HashMap::new(),
             legend_hover: None,
@@ -169,6 +265,8 @@ impl Results {
             ask: AskState::Idle,
             matches: None,
             search_version: 0,
+            refresh: None,
+            caught_up: false,
         };
         results.homes = home_folders(&results.tree);
         results.relayout();

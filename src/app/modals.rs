@@ -2,16 +2,27 @@
 
 use super::*;
 
-impl Broom {
-    pub(crate) fn open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
-        // Never under a native sheet (trash confirm, folder picker): the parent
-        // window is disabled for its duration and our card would be dead on arrival.
-        if self.busy {
-            return;
-        }
-        self.open_panel(PanelTab::Keys, window, cx);
-    }
+/// Zero-height canvases at a scroll area's content ends record where it
+/// starts and stops. When a recorded end moves (a tab switch, a row
+/// growing), one more frame keeps the scrollbar truthful.
+pub(super) fn measure(cell: Rc<Cell<Option<f32>>>) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let y: f32 = bounds.origin.y.into();
+            if cell.get() != Some(y) {
+                cell.set(Some(y));
+                window.request_animation_frame();
+            }
+        },
+    )
+    .w_full()
+    .h(px(0.))
+}
 
+impl Broom {
+    /// Escape on the Help card (its key context is "Panel"). Settings has a
+    /// window of its own now, which handles its own Escape.
     pub(super) fn close_settings(&mut self, _: &CloseSettings, window: &mut Window, cx: &mut Context<Self>) {
         if self.modal.is_some() {
             self.close_modal(window, cx);
@@ -31,40 +42,12 @@ impl Broom {
         }
     }
 
-    /// Open the panel on a tab — or, if it's already up, just switch to it.
-    /// The key rows keep whatever the keychain last told them.
-    /// Clears the salvaged-settings notice after its one display.
+    /// Open the card on a tab — or, if it's already up, just switch to it.
     pub(super) fn open_panel(&mut self, tab: PanelTab, window: &mut Window, cx: &mut Context<Self>) {
-        self.settings_salvaged.take();
         if let Some(p) = &mut self.modal {
             p.tab = tab;
         } else {
-            let rows = vec![
-                KeyRow {
-                    service: secrets::JEV_SERVICE.into(),
-                    title: "Reader key (typesafe.ai)".into(),
-                    hint: "Lets the reader judge what an Ask query means.".into(),
-                    status: KeyStatus::Loading,
-                },
-            ];
-            self.settings_epoch += 1;
-            self.modal = Some(PanelState {
-                tab,
-                settings: SettingsState {
-                    rows,
-                    custom: cx.new(|cx| EditableTextState::new(StringStorage::default(), cx)),
-                    exclude_input: cx.new(|cx| EditableTextState::new(StringStorage::default(), cx)),
-                    note: None,
-                    note_epoch: 0,
-                },
-                scroll: ScrollHandle::new(),
-                content_top: Rc::default(),
-                content_bottom: Rc::default(),
-                drag: Rc::default(),
-            });
-            for ix in 0..1 {
-                self.refresh_key_row(ix, cx);
-            }
+            self.modal = Some(PanelState { tab, scroller: Scroller::default() });
         }
         window.focus(&self.modal_focus, cx);
         cx.notify();
@@ -72,10 +55,10 @@ impl Broom {
 
     /// Enter inside Settings: only the key-name field responds — Enter there
     /// checks the keychain. Keys are pasted rather than typed, so no other
-    /// field gives Enter anything to do.
+    /// field gives Enter anything to do. `window` is the Settings window.
     pub(super) fn settings_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(focused) = window.focused(cx) else { return };
-        let check = match &self.modal {
+        let check = match &self.prefs {
             Some(p) => focused == p.settings.custom.read(cx).focus_handle(cx),
             None => false,
         };
@@ -112,7 +95,6 @@ impl Broom {
             (Some(review), _) => ("Review", self.render_review(review, cx).into_any_element()),
             (None, Some(p)) => (
                 match p.tab {
-                    PanelTab::Keys => "Settings",
                     PanelTab::Help => "Panel",
                     PanelTab::About => "About",
                 },
@@ -161,11 +143,7 @@ impl Broom {
             .border_color(rgb(colors().border))
             .bg(rgb(colors().bg))
             .text_xs();
-        for (label, tab) in [
-            ("Settings", PanelTab::Keys),
-            ("Help", PanelTab::Help),
-            ("About", PanelTab::About),
-        ] {
+        for (label, tab) in [("Help", PanelTab::Help), ("About", PanelTab::About)] {
             let selected = p.tab == tab;
             tabs = tabs.child(
                 div()
@@ -182,33 +160,15 @@ impl Broom {
                         if let Some(p) = &mut this.modal {
                             p.tab = tab;
                             // Each tab starts at the top, with nothing measured yet.
-                            p.scroll.set_offset(point(px(0.), px(0.)));
-                            p.content_top.set(None);
-                            p.content_bottom.set(None);
+                            p.scroller.scroll.set_offset(point(px(0.), px(0.)));
+                            p.scroller.content_top.set(None);
+                            p.scroller.content_bottom.set(None);
                         }
                         cx.notify();
                     }))
                     .child(label),
             );
         }
-
-        // Zero-height canvases at the content's ends record where it starts and
-        // stops. When a recorded end moves (a tab switch, a row growing), one
-        // more frame keeps the scrollbar truthful.
-        let measure = |cell: Rc<Cell<Option<f32>>>| {
-            canvas(
-                |_, _, _| {},
-                move |bounds, _, window, _| {
-                    let y: f32 = bounds.origin.y.into();
-                    if cell.get() != Some(y) {
-                        cell.set(Some(y));
-                        window.request_animation_frame();
-                    }
-                },
-            )
-            .w_full()
-            .h(px(0.))
-        };
 
         // Height follows the tab's content, capped: the header (tabs + Done)
         // stays put and only the content scrolls, in a viewport with Broom's
@@ -243,124 +203,127 @@ impl Broom {
                             .flex_1()
                             .min_w_0()
                             .overflow_y_scroll()
-                            .track_scroll(&p.scroll)
+                            .track_scroll(&p.scroller.scroll)
                             .child(
                                 div()
                                     .id("panel-content")
                                     .flex()
                                     .flex_col()
-                                    .child(measure(p.content_top.clone()))
+                                    .child(measure(p.scroller.content_top.clone()))
                                     .child(match p.tab {
-                                        PanelTab::Keys => self.render_settings(&p.settings, cx).into_any_element(),
                                         PanelTab::Help => render_help().into_any_element(),
                                         PanelTab::About => self.render_about(cx).into_any_element(),
                                     })
-                                    .child(measure(p.content_bottom.clone())),
+                                    .child(measure(p.scroller.content_bottom.clone())),
                             ),
                     )
-                    .child(self.render_panel_scrollbar(p)),
+                    .child(panel_scrollbar(&p.scroller)),
             )
     }
+}
 
-    /// The panel's own scrollbar: a slim column beside the scrolling content,
-    /// painted as track + rounded thumb and dragged through raw mouse events.
-    /// `ScrollHandle::set_offset` writes exactly what it's handed — no
-    /// clamping — so every write here clamps first.
-    pub(super) fn render_panel_scrollbar(&self, p: &PanelState) -> impl IntoElement {
-        let scroll = p.scroll.clone();
-        let top_cell = p.content_top.clone();
-        let bottom_cell = p.content_bottom.clone();
-        let drag = p.drag.clone();
-        canvas(
-            move |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
-            move |bounds, hitbox, window, _| {
-                let Some(top) = top_cell.get() else { return };
-                let Some(bottom) = bottom_cell.get() else { return };
-                let viewport = scroll.bounds();
-                let (content_h, viewport_h, track_h): (f32, f32, f32) =
-                    (bottom - top, viewport.size.height.into(), bounds.size.height.into());
-                // Nothing overflows, or nothing measurable yet: no scrollbar.
-                if content_h <= viewport_h + 0.5 || viewport_h <= 0.0 || track_h <= 1.0 {
+/// Broom's own scrollbar: a slim column beside the scrolling content,
+/// painted as track + rounded thumb and dragged through raw mouse events.
+/// `ScrollHandle::set_offset` writes exactly what it's handed — no
+/// clamping — so every write here clamps first.
+pub(super) fn panel_scrollbar(p: &Scroller) -> impl IntoElement + use<> {
+    let scroll = p.scroll.clone();
+    let top_cell = p.content_top.clone();
+    let bottom_cell = p.content_bottom.clone();
+    let drag = p.drag.clone();
+    canvas(
+        move |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+        move |bounds, hitbox, window, _| {
+            let Some(top) = top_cell.get() else { return };
+            let Some(bottom) = bottom_cell.get() else { return };
+            let viewport = scroll.bounds();
+            let (content_h, viewport_h, track_h): (f32, f32, f32) =
+                (bottom - top, viewport.size.height.into(), bounds.size.height.into());
+            // Nothing overflows, or nothing measurable yet: no scrollbar.
+            if content_h <= viewport_h + 0.5 || viewport_h <= 0.0 || track_h <= 1.0 {
+                return;
+            }
+            let max_scroll = content_h - viewport_h;
+            // gpui keeps scroll offsets at or below zero (content moved up);
+            // the thumb wants the distance scrolled, so flip the sign both ways.
+            let offset: f32 = -f32::from(scroll.offset().y);
+            let progress = (offset / max_scroll).clamp(0.0, 1.0);
+            let thumb_h = (viewport_h / content_h * track_h).clamp(24.0, track_h);
+            let travel = track_h - thumb_h;
+            let left: f32 = bounds.origin.x.into();
+            let track_top: f32 = bounds.origin.y.into();
+            let thumb_top = track_top + travel * progress;
+
+            // Track and thumb, light on the dark card and quiet at rest.
+            window.paint_quad(quad(
+                Bounds::from_corners(
+                    point(px(left + 1.), px(track_top + 1.)),
+                    point(px(left + 9.), px(track_top + track_h - 1.)),
+                ),
+                px(4.),
+                theme::overlay(0.05),
+                px(0.),
+                gpui::hsla(0., 0., 0., 0.),
+                BorderStyle::default(),
+            ));
+            let held = drag.get().is_some();
+            window.paint_quad(quad(
+                Bounds::from_corners(point(px(left + 2.), px(thumb_top)), point(px(left + 8.), px(thumb_top + thumb_h))),
+                px(3.),
+                theme::overlay(if held { 0.38 } else { 0.22 }),
+                px(0.),
+                gpui::hsla(0., 0., 0., 0.),
+                BorderStyle::default(),
+            ));
+
+            if hitbox.is_hovered(window) {
+                window.set_cursor_style(CursorStyle::ResizeUpDown, &hitbox);
+            }
+
+            // Press: on the thumb, drag from where it is; on the track,
+            // page the thumb there first and drag from that spot.
+            let (scroll_d, drag_d, hitbox_d) = (scroll.clone(), drag.clone(), hitbox.clone());
+            window.on_mouse_event(move |event: &MouseDownEvent, phase, window, _| {
+                if phase != DispatchPhase::Bubble || event.button != MouseButton::Left || !hitbox_d.is_hovered(window) {
                     return;
                 }
-                let max_scroll = content_h - viewport_h;
-                let offset: f32 = scroll.offset().y.into();
-                let progress = (offset / max_scroll).clamp(0.0, 1.0);
-                let thumb_h = (viewport_h / content_h * track_h).clamp(24.0, track_h);
-                let travel = track_h - thumb_h;
-                let left: f32 = bounds.origin.x.into();
-                let track_top: f32 = bounds.origin.y.into();
-                let thumb_top = track_top + travel * progress;
-
-                // Track and thumb, light on the dark card and quiet at rest.
-                window.paint_quad(quad(
-                    Bounds::from_corners(
-                        point(px(left + 1.), px(track_top + 1.)),
-                        point(px(left + 9.), px(track_top + track_h - 1.)),
-                    ),
-                    px(4.),
-                    theme::overlay(0.05),
-                    px(0.),
-                    gpui::hsla(0., 0., 0., 0.),
-                    BorderStyle::default(),
-                ));
-                let held = drag.get().is_some();
-                window.paint_quad(quad(
-                    Bounds::from_corners(point(px(left + 2.), px(thumb_top)), point(px(left + 8.), px(thumb_top + thumb_h))),
-                    px(3.),
-                    theme::overlay(if held { 0.38 } else { 0.22 }),
-                    px(0.),
-                    gpui::hsla(0., 0., 0., 0.),
-                    BorderStyle::default(),
-                ));
-
-                if hitbox.is_hovered(window) {
-                    window.set_cursor_style(CursorStyle::ResizeUpDown, &hitbox);
+                let y: f32 = event.position.y.into();
+                let from = if (thumb_top..=thumb_top + thumb_h).contains(&y) {
+                    offset
+                } else {
+                    ((y - track_top - thumb_h / 2.0) / travel).clamp(0.0, 1.0) * max_scroll
+                };
+                drag_d.set(Some((y, from)));
+                scroll_d.set_offset(point(px(0.), px(-from.clamp(0.0, max_scroll))));
+                window.request_animation_frame();
+            });
+            // Move while held: follow the pointer, clamped to the content.
+            let (scroll_m, drag_m) = (scroll.clone(), drag.clone());
+            window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, _| {
+                if phase != DispatchPhase::Bubble {
+                    return;
                 }
-
-                // Press: on the thumb, drag from where it is; on the track,
-                // page the thumb there first and drag from that spot.
-                let (scroll_d, drag_d, hitbox_d) = (scroll.clone(), drag.clone(), hitbox.clone());
-                window.on_mouse_event(move |event: &MouseDownEvent, phase, window, _| {
-                    if phase != DispatchPhase::Bubble || event.button != MouseButton::Left || !hitbox_d.is_hovered(window) {
-                        return;
-                    }
-                    let y: f32 = event.position.y.into();
-                    let from = if (thumb_top..=thumb_top + thumb_h).contains(&y) {
-                        offset
-                    } else {
-                        ((y - track_top - thumb_h / 2.0) / travel).clamp(0.0, 1.0) * max_scroll
-                    };
-                    drag_d.set(Some((y, from)));
-                    scroll_d.set_offset(point(px(0.), px(from.clamp(0.0, max_scroll))));
+                // No hitbox check: a drag that wanders off the scrollbar keeps going.
+                let Some((y0, from)) = drag_m.get() else { return };
+                let y: f32 = event.position.y.into();
+                let to = (from + (y - y0) * (max_scroll / travel)).clamp(0.0, max_scroll);
+                scroll_m.set_offset(point(px(0.), px(-to)));
+                window.request_animation_frame();
+            });
+            let drag_u = drag.clone();
+            window.on_mouse_event(move |_: &MouseUpEvent, phase, window, _| {
+                if phase == DispatchPhase::Bubble && drag_u.replace(None).is_some() {
                     window.request_animation_frame();
-                });
-                // Move while held: follow the pointer, clamped to the content.
-                let (scroll_m, drag_m) = (scroll.clone(), drag.clone());
-                window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, _| {
-                    if phase != DispatchPhase::Bubble {
-                        return;
-                    }
-                    // No hitbox check: a drag that wanders off the scrollbar keeps going.
-                    let Some((y0, from)) = drag_m.get() else { return };
-                    let y: f32 = event.position.y.into();
-                    let to = (from + (y - y0) * (max_scroll / travel)).clamp(0.0, max_scroll);
-                    scroll_m.set_offset(point(px(0.), px(to)));
-                    window.request_animation_frame();
-                });
-                let drag_u = drag.clone();
-                window.on_mouse_event(move |_: &MouseUpEvent, phase, window, _| {
-                    if phase == DispatchPhase::Bubble && drag_u.replace(None).is_some() {
-                        window.request_animation_frame();
-                    }
-                });
-            },
-        )
-        .w(px(10.))
-        .flex_none()
-        .h_full()
-    }
+                }
+            });
+        },
+    )
+    .w(px(10.))
+    .flex_none()
+    .h_full()
+}
 
+impl Broom {
     pub(super) fn render_about(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
@@ -395,6 +358,8 @@ impl Broom {
                     .tooltip(|_, cx| cx.new(|_| Tip("Open the project on GitHub".into())).into())
                     .child("github.com/sriinnu/broom ↗"),
             )
+            // The lifetime tally, once there is one: a quiet line, not a score.
+            .children(crate::delight::tally().summary().map(|line| div().text_sm().text_color(rgb(colors().muted)).child(line)))
             .child(div().mt_2().text_sm().child("Made by Srinivas Pendela"))
             .child(
                 div().text_xs().text_color(rgb(colors().muted)).child("© 2026 Srinivas Pendela · Built with Rust and GPUI"),
@@ -440,15 +405,9 @@ impl Broom {
                     cx.notify();
                 })
             }),
-            item("menu-copy", "Copy Path (relative)").on_click({
-                let path = path.clone();
-                cx.listener(move |this, _, _, cx| {
-                    this.context_menu = None;
-                    cx.write_to_clipboard(ClipboardItem::new_string(abbreviate_home(&path.to_string_lossy())));
-                    cx.notify();
-                })
-            }),
-            item("menu-copy-abs", "Copy Full Path").on_click({
+            // Named and ordered as in the Edit menu, so the same command reads
+            // the same wherever it's chosen.
+            item("menu-copy-abs", "Copy Path").on_click({
                 let path = path.clone();
                 cx.listener(move |this, _, _, cx| {
                     this.context_menu = None;
@@ -456,10 +415,18 @@ impl Broom {
                     cx.notify();
                 })
             }),
+            item("menu-copy", "Copy Path with ~").on_click({
+                let path = path.clone();
+                cx.listener(move |this, _, _, cx| {
+                    this.context_menu = None;
+                    cx.write_to_clipboard(ClipboardItem::new_string(abbreviate_home(&path.to_string_lossy())));
+                    cx.notify();
+                })
+            }),
         ];
         if actionable {
             let staged = matches!(&self.screen, Screen::Results(r) if r.tick(node) == Tick::On);
-            items.push(item("menu-collect", if staged { "Remove from cleanup plan" } else { "Stage for cleanup" }).on_click(cx.listener(
+            items.push(item("menu-collect", if staged { "Remove from Cleanup Plan" } else { "Stage for Cleanup" }).on_click(cx.listener(
                 move |this, _, _, cx| {
                     this.context_menu = None;
                     this.click_tick(node, cx);

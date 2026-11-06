@@ -196,7 +196,10 @@ fn coat(window: &mut Window, fig: &Fig, bob: f32, lean: f32, e: f32, color: Hsla
 /// `bounds`. `done` is the scan's fraction when known: the lens rim fills
 /// clockwise with it.
 pub fn paint_investigator(window: &mut Window, bounds: gpui::Bounds<Pixels>, done: Option<f32>) {
-    let t = t();
+    // Reduce Motion: stand still, bent over the floor with the magnifier, and
+    // ask for no frames; the bubble still changes with the scan.
+    let still = crate::delight::reduce_motion();
+    let t = if still { STILL_T } else { t() };
     let w: f32 = bounds.size.width.into();
     let h: f32 = bounds.size.height.into();
     let s = h / 64.0;
@@ -315,8 +318,14 @@ pub fn paint_investigator(window: &mut Window, bounds: gpui::Bounds<Pixels>, don
         Geometry::ring(center, r + 0.5, rim).paint_sector(window, 1, 0.0, 1.0, track);
         Geometry::ring(center, r + 0.5, rim).paint_sector(window, 1, 0.0, done.clamp(0.0, 1.0), to_hsla(CREAM));
     }
-    window.request_animation_frame();
+    if !still {
+        window.request_animation_frame();
+    }
 }
+
+/// A moment in the cycle that holds the "studying the floor" pose, standing
+/// still, eyes open: what the figure shows when motion is reduced.
+const STILL_T: f32 = POSE_SECS * 2.0 + 1.0;
 
 /// The whole strip: investigator on the left, a speech bubble with the caption
 /// on the right. `done` is the scan's fraction if known.
