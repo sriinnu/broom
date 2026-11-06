@@ -66,9 +66,18 @@ for the usual space hogs, and a cleanup plan you stage with checkboxes before an
   Chrome's update leftovers. Each is **Safe to delete** or **Review first**, with a one-line reason.
 - **A cleanup plan, not a delete button.** Tick folders, findings or panel groups to stage them. The
   plan shows what's selected, what's shared with other files, and what will actually free. **Review
-  & move to Trash** lists every path once more before anything moves, and then the folders tumble
-  into a little bin while the real move runs. Finder does the move, so **Put Back** works; the few
+  and Move to Trash…** lists every path once more before anything moves, and then the folders tumble
+  into a little bin while the real move runs (with Reduce Motion on, they fade in instead). Finder does the move, so **Put Back** works; the few
   folders Finder refuses (very large `node_modules`, say) go through NSFileManager instead.
+- **Empty Trash, with the real number.** File › Empty Trash… (⇧⌘⌫), or the button on the banner
+  after a cleanup, says what's in every Trash and that it can't be undone, then empties it and shows
+  how much free space the disk actually gained, measured, not assumed. Locked items stay put and are
+  counted. Without Full Disk Access it offers to have Finder do it.
+- **Merge as Clones.** The Duplicate files finding can merge instead of delete: each extra copy is
+  replaced in place by an APFS clone of the copy that stays, keeping its own name, dates,
+  permissions and tags. Nothing is deleted and nothing moves; the bytes are stored once. Copies that
+  changed since the scan, locked or hard-linked ones, and ones on another disk are left alone, and
+  the banner says how many.
 - **It keeps up with Finder.** Empty the Trash, or drop something into it, and the Trash finding,
   the folder's slice and the disks' free space follow within a couple of seconds, no rescan.
 - **Five looks.** **Settings › Appearance** switches between Classic (the default), Darkroom,
@@ -157,8 +166,8 @@ the breadcrumbs copies the open folder's path, and hovering a path that's cut sh
 Broom remembers each scan (folder sizes only, for a week), so scanning the same place again shows
 what grew since: `+1.2 GB` in amber beside a folder, shrinkage in green. Once a scan finishes,
 identical copies of your own files show up as a **Duplicate files** finding (compared byte for
-byte; APFS clones and hard links don't count, since deleting them frees nothing). After a move to
-the Trash, the banner has a **Put back** button for a few seconds.
+byte; APFS clones and hard links don't count, since deleting them frees nothing), with **Merge as
+Clones…** beside it. After a move to the Trash, the banner has **Put Back** and **Empty Trash…**.
 
 | Keys | Action |
 |---|---|
@@ -179,6 +188,7 @@ the Trash, the banner has a **Put back** button for a few seconds.
 | ⌘R | Rescan: re-reads only the folders macOS says changed since the last scan |
 | ⇧⌘R | Full rescan, reading everything again |
 | ⇧⌘D | Back to the Disks screen |
+| ⇧⌘⌫ | Empty Trash… (asks first) |
 | ⌘, | Settings, in its own window |
 | ⌘W, ⌘M, ⌘H | Close (Broom stays in the menu bar), minimize, hide |
 | ⌘Q | Quit |
@@ -209,6 +219,10 @@ finding, extension or worktree match rather than a substring or kind guess), `by
 exact paths it wants; `clean --yes` is the shortcut for "everything precise and safe". `--ask` on
 `find` or `clean` also consults the configured reader and reports its answer. The CLI refuses the
 disk root, system folders, volumes, your home folder and its standard folders, and any Trash.
+
+**Agents can only move things to the Trash.** Nothing on this side deletes for good, empties the
+Trash or rewrites files; those stay in the window, behind a confirm a person clicks. A test reads
+the CLI's code and fails the build if that ever changes.
 Exit codes: 0 done, 1 something failed (partial failures list what didn't move), 2 usage.
 
 ## How it works
