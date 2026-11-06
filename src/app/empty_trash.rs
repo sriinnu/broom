@@ -28,7 +28,7 @@ pub(super) struct EmptyTrashState {
 impl Broom {
     /// File › Empty Trash…, ⇧⌘⌫, or the button on the after-sweep banner.
     pub(super) fn open_empty_trash(&mut self, _: &EmptyTrash, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy || self.review.is_some() || self.empty_trash.is_some() || self.merge.is_some() {
+        if self.busy || self.review.is_some() || self.empty_trash.is_some() || self.merge.is_some() || self.space.is_some() {
             return;
         }
         self.modal = None;

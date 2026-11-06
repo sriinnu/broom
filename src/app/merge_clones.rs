@@ -69,7 +69,7 @@ impl Merged {
 impl Broom {
     /// The finding's "Merge as Clones…".
     pub(super) fn open_merge(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy || self.review.is_some() || self.empty_trash.is_some() || self.merge.is_some() {
+        if self.busy || self.review.is_some() || self.empty_trash.is_some() || self.merge.is_some() || self.space.is_some() {
             return;
         }
         let Some(r) = self.results() else { return };

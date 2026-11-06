@@ -24,6 +24,8 @@ pub struct Broom {
     pub(super) empty_trash: Option<EmptyTrashState>,
     /// The Merge as Clones card, if open.
     pub(super) merge: Option<MergeState>,
+    /// The Where Is My Space card, if open.
+    pub(super) space: Option<SpaceState>,
     pub(super) focus_handle: FocusHandle,
     pub(super) error: Option<String>,
     pub(super) access: Access,
@@ -123,6 +125,8 @@ impl Render for Broom {
             .on_action(cx.listener(Self::open_empty_trash))
             .on_action(cx.listener(Self::close_empty_trash))
             .on_action(cx.listener(Self::close_merge))
+            .on_action(cx.listener(Self::show_space))
+            .on_action(cx.listener(Self::close_space))
             .on_action(cx.listener(Self::copy_path))
             .on_action(cx.listener(Self::copy_relative_path))
             .on_action(cx.listener(|this, _: &SortBySize, _, cx| this.choose_sort(SortBy::Size, cx)))
@@ -198,6 +202,7 @@ impl Broom {
             review: None,
             empty_trash: None,
             merge: None,
+            space: None,
             focus_handle,
             error: None,
             access,

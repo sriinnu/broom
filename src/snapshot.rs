@@ -195,6 +195,15 @@ pub fn install(window: &mut Window, cx: &mut Context<Broom>) {
                     })
                     .ok();
                 }
+                // `space`: open the Where Is My Space card.
+                "space" => {
+                    cx.update(|window, cx| {
+                        if let Some(broom) = crate::app::broom() {
+                            broom.update(cx, |b, cx| b.show_space(&crate::app::ShowSpace, window, cx));
+                        }
+                    })
+                    .ok();
+                }
                 // `merge` / `merge-confirm`: open Merge as Clones on the
                 // Duplicate files finding, and press its Merge button.
                 "merge" => {

@@ -84,6 +84,10 @@ impl Broom {
             self.close_merge(&CloseMerge, window, cx);
             return;
         }
+        if self.space.is_some() {
+            self.close_space(&CloseSpace, window, cx);
+            return;
+        }
         if let Some(review) = &self.review {
             if review.working {
                 return;
@@ -105,6 +109,7 @@ impl Broom {
                 ("EmptyTrash", self.render_empty_trash(self.empty_trash.as_ref().expect("checked"), cx))
             }
             (None, _) if self.merge.is_some() => ("Merge", self.render_merge(self.merge.as_ref().expect("checked"), cx)),
+            (None, _) if self.space.is_some() => ("Space", self.render_space(self.space.as_ref().expect("checked"), cx)),
             (None, Some(p)) => (
                 match p.tab {
                     PanelTab::Help => "Panel",

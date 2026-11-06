@@ -19,6 +19,7 @@ mod motion;
 mod onboarding;
 mod refresh;
 mod scan;
+mod space;
 mod secrets;
 mod settings;
 mod single;
@@ -36,7 +37,7 @@ use gpui::{App, KeyBinding};
 use app::{
     CloseAbout, CloseReview, CloseSettings, DismissQuery, FocusQuery, GoUp, GoBack, GoForward, ToggleRail, ToggleCleanup, SelectAll, OpenFolder, OpenSelected, OpenSettings, Rescan, FullRescan,
     SelectNext, SelectPrev, StartOver, SubmitQuery, ToggleStaged, CopyPath, CopyRelativePath,
-    SortBySize, SortByName, SortByModified, EmptyTrash, CloseEmptyTrash, CloseMerge, Quit, HideApp, HideOthers, CloseWindow, Minimize,
+    SortBySize, SortByName, SortByModified, EmptyTrash, CloseEmptyTrash, CloseMerge, CloseSpace, Quit, HideApp, HideOthers, CloseWindow, Minimize,
 };
 
 
@@ -130,6 +131,7 @@ fn main() {
             KeyBinding::new("escape", CloseReview, Some("Review")),
             KeyBinding::new("escape", CloseEmptyTrash, Some("EmptyTrash")),
             KeyBinding::new("escape", CloseMerge, Some("Merge")),
+            KeyBinding::new("escape", CloseSpace, Some("Space")),
             // Finder's Empty Trash key.
             KeyBinding::new("cmd-shift-backspace", EmptyTrash, None),
             // The navigator's keyboard. Not inside a text field: there the

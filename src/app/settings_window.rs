@@ -71,6 +71,7 @@ impl Render for SettingsWindow {
         let root = forward::<CopyRelativePath>(root);
         let root = forward::<About>(root);
         let root = forward::<EmptyTrash>(root);
+        let root = forward::<ShowSpace>(root);
         root.size_full()
             .flex()
             .flex_col()
@@ -125,7 +126,7 @@ pub fn open_settings_window(cx: &mut App) {
     // Settings opening over it would bury a destructive question, and a
     // change of excludes or theme mid-move helps no one. Bring the card
     // forward instead; ⌘, works again once it's answered.
-    if { let b = broom.read(cx); b.review.is_some() || b.empty_trash.is_some() || b.merge.is_some() } {
+    if { let b = broom.read(cx); b.review.is_some() || b.empty_trash.is_some() || b.merge.is_some() || b.space.is_some() } {
         if let Some(main) = cx.windows().into_iter().find_map(|w| w.downcast::<Broom>()) {
             let _ = main.update(cx, |_, window, _| window.activate());
             return;

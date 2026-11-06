@@ -52,6 +52,8 @@ pub fn app_menus(rail_hidden: bool, cleanup_hidden: bool) -> Vec<Menu> {
             MenuItem::separator(),
             MenuItem::action(if rail_hidden { "Show Sidebar" } else { "Hide Sidebar" }, ToggleRail),
             MenuItem::action(if cleanup_hidden { "Show Cleanup Column" } else { "Hide Cleanup Column" }, ToggleCleanup),
+            MenuItem::separator(),
+            MenuItem::action("Where Is My Space…", ShowSpace),
         ]),
         menu("Go", vec![
             MenuItem::action("Back", GoBack),

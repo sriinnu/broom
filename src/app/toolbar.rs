@@ -334,6 +334,22 @@ impl Broom {
                                 })
                                 .child(format!("+{} purgeable", format_size(volume.purgeable))),
                         )
+                    })
+                    // The startup disk: the arithmetic behind its numbers.
+                    .when(i == 0, |d| {
+                        d.child(
+                            div()
+                                .id("where-is-my-space")
+                                .text_xs()
+                                .text_color(rgb(colors().accent))
+                                .cursor_pointer()
+                                .hover(|s| s.underline())
+                                .child("Where is my space? ›")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.show_space(&ShowSpace, window, cx);
+                                })),
+                        )
                     }),
             );
         }
