@@ -78,6 +78,12 @@ for the usual space hogs, and a cleanup plan you stage with checkboxes before an
   permissions and tags. Nothing is deleted and nothing moves; the bytes are stored once. Copies that
   changed since the scan, locked or hard-linked ones, and ones on another disk are left alone, and
   the banner says how many.
+- **Developer caches, project by project.** Build outputs (`target`, `.next`, `Pods`, Gradle
+  `build`, …) are found only with their tool's file beside them (`Cargo.toml`, `Podfile`, …) or a
+  `CACHEDIR.TAG`, never by name alone, and never when git tracks files in them. Show the list to
+  tick projects one by one; ones that changed this week stay unticked when you tick the finding.
+  Docker, Go modules, Rust toolchains and Ollama models are shown with the command that cleans them
+  properly, and no checkbox.
 - **Never offer this.** Right-click anything › Never Offer This, or list it in Settings ›
   Protected. It's still scanned and shown, but no finding offers it, it can't be staged, and the
   move to the Trash refuses it and anything holding it, whoever asks, the CLI included. A finding

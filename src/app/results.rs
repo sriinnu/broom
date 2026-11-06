@@ -110,6 +110,11 @@ pub(super) struct Results {
     /// What the findings would have offered but for the protect list, so the
     /// panel can say it left them out.
     pub(super) not_offered: Vec<PathBuf>,
+    /// Project folders (see `findings::PROJECT_FINDINGS`) a build touched in
+    /// the last week, with when: listed, but not staged with the rest.
+    pub(super) recent: HashMap<usize, SystemTime>,
+    /// Project findings unfolded in the panel, by title.
+    pub(super) unfolded: HashSet<&'static str>,
     /// The query at the centre of the current ask state.
     pub(super) query: SharedString,
     pub(super) ask: AskState,
@@ -283,6 +288,8 @@ impl Results {
             protected: HashSet::new(),
             holds_protected: HashSet::new(),
             not_offered: Vec::new(),
+            recent: HashMap::new(),
+            unfolded: HashSet::new(),
             query: SharedString::default(),
             ask: AskState::Idle,
             matches: None,

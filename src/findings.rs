@@ -309,6 +309,30 @@ fn from_tree_min(tree: &Tree, bases: &Bases, min_size: u64) -> Vec<Finding> {
 
 pub const BUILD_OUTPUTS: &str = "Build outputs";
 
+/// Findings made of many projects' folders, listed one by one in the panel.
+/// Folders that changed in the last week (a build or an install, most
+/// likely) aren't staged with the rest.
+pub const PROJECT_FINDINGS: &[&str] = &["node_modules", BUILD_OUTPUTS, "Python environments"];
+
+/// "This week", for `PROJECT_FINDINGS`.
+pub const RECENT: std::time::Duration = std::time::Duration::from_secs(7 * 86_400);
+
+/// When a build last wrote to a project folder: the newest modification
+/// time of the folder and what's directly in it (a build replaces files in
+/// `target/debug`, which touches `debug`, not `target`). One level only,
+/// at most 256 entries, so a huge node_modules costs a few hundred stats.
+pub fn last_built(path: &Path) -> Option<std::time::SystemTime> {
+    let mut newest = path.metadata().ok()?.modified().ok()?;
+    if let Ok(dir) = std::fs::read_dir(path) {
+        for entry in dir.flatten().take(256) {
+            if let Ok(t) = entry.metadata().and_then(|m| m.modified()) {
+                newest = newest.max(t);
+            }
+        }
+    }
+    Some(newest)
+}
+
 /// Build folders, and the files that must sit beside one for Broom to call
 /// it the build's: a `target` next to `Cargo.toml` is Cargo's, one in
 /// Documents is somebody's. A name alone never decides.

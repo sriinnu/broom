@@ -659,10 +659,36 @@ impl Broom {
         }
     }
 
+    /// When each project folder was last built, in the background: the ones
+    /// built this week stay off a ticked finding (see `Results::recent`).
+    fn survey_projects(&mut self, tree: Arc<Tree>, scan_id: u64, cx: &mut Context<Self>) {
+        let Some(r) = self.results().filter(|r| r.scan_id == scan_id) else { return };
+        let nodes: Vec<usize> = r.findings.iter().filter(|f| findings::PROJECT_FINDINGS.contains(&f.title)).flat_map(|f| f.nodes.iter().copied()).collect();
+        if nodes.is_empty() {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let recent = cx
+                .background_spawn(async move {
+                    let since = SystemTime::now() - findings::RECENT;
+                    nodes.into_iter().filter_map(|ix| findings::last_built(&tree.path_of(ix)).filter(|t| *t >= since).map(|t| (ix, t))).collect::<HashMap<_, _>>()
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if let Some(r) = this.results().filter(|r| r.scan_id == scan_id) {
+                    r.recent = recent;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     /// Look for duplicate files in the background, on the survey pool so it
     /// queues behind the clone surveys instead of starving searches; the
     /// finding joins the list when it's done.
     pub(super) fn find_duplicates(&mut self, tree: Arc<Tree>, scan_id: u64, cx: &mut Context<Self>) {
+        self.survey_projects(tree.clone(), scan_id, cx);
         cx.spawn(async move |this, cx| {
             let found = cx.background_spawn(async move { survey_pool().install(|| duplicates::find(&tree)) }).await;
             let Some((finding, pairs)) = found else { return };
