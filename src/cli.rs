@@ -32,7 +32,8 @@ const USAGE: &str = "\
 broom: ask your Mac what's eating the disk, tick what should go, trash it.
 
   broom                          open the app
-  broom PATH                     open the app scanning PATH
+  broom FOLDER                   open the app scanning FOLDER (anything else is an error)
+  broom --version                print the version
   broom scan  [PATH] [--json]    headless scan: totals, biggest folders, findings
   broom find  QUERY… [--root PATH] [--ask] [--json]
                                  what the panel would show for QUERY (default root: home)
@@ -50,7 +51,7 @@ Queries are plain words: \"node modules\", \"dist folders\", \"worktrees\", \"ol
 ";
 
 /// Handle a CLI invocation. Returns `None` when the arguments are for the app
-/// (no subcommand), otherwise the process exit code.
+/// (nothing, or a folder to open), otherwise the process exit code.
 pub fn run(args: &[String]) -> Option<i32> {
     let cmd = args.get(1).map(String::as_str)?;
     let rest = &args[2..];
@@ -59,12 +60,42 @@ pub fn run(args: &[String]) -> Option<i32> {
             print!("{USAGE}");
             0
         }
+        "--version" | "-V" | "version" => {
+            println!("broom {}", env!("CARGO_PKG_VERSION"));
+            0
+        }
         "scan" => cmd_scan(rest),
         "find" => cmd_find(rest),
         "clean" => cmd_clean(rest),
         "trash" => cmd_trash(rest),
-        _ => return None,
+        _ => match not_a_folder(cmd) {
+            None => return None,
+            Some(why) => {
+                eprintln!("broom: {why}\nRun `broom help` for the commands.");
+                2
+            }
+        },
     })
+}
+
+/// Why `arg` can't be the folder the window opens with, if it can't. A typo
+/// (`broom sacn`) or a bad flag must say so and exit, not open a window that
+/// scans nothing: a script or an agent would be left with a GUI and no answer.
+fn not_a_folder(arg: &str) -> Option<String> {
+    // Left for main: the launcher's process serial number (older macOS adds
+    // it), and the developer tools.
+    if arg.starts_with("-psn_") || arg.starts_with("--bench-") || arg == "--check-access" {
+        return None;
+    }
+    if arg.starts_with('-') {
+        return Some(format!("unknown option {arg}"));
+    }
+    let path = Path::new(arg);
+    match path.metadata() {
+        Ok(m) if m.is_dir() => None,
+        Ok(_) => Some(format!("{arg} is a file; Broom opens folders")),
+        Err(_) => Some(format!("no command or folder called \"{arg}\"")),
+    }
 }
 
 struct Opts {
@@ -584,6 +615,24 @@ fn cmd_clean(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A typo or a bad flag says so and exits; only a real folder (or
+    /// nothing) opens the window.
+    #[test]
+    fn unknown_words_are_errors_not_windows() {
+        assert!(not_a_folder("nonsens").unwrap().contains("no command or folder called"));
+        assert!(not_a_folder("--verbose").unwrap().contains("unknown option"));
+        assert!(not_a_folder("Cargo.toml").unwrap().contains("is a file"));
+        assert_eq!(not_a_folder("src"), None);
+        assert_eq!(not_a_folder("/"), None);
+        assert_eq!(not_a_folder("-psn_0_12345"), None);
+        assert_eq!(not_a_folder("--bench-scan"), None);
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(run(&args(&["broom", "nonsens"])), Some(2));
+        assert_eq!(run(&args(&["broom", "--version"])), Some(0));
+        assert_eq!(run(&args(&["broom", "src"])), None, "a folder is for the window");
+        assert_eq!(run(&args(&["broom"])), None);
+    }
 
     #[test]
     fn parse_splits_words_from_options() {
