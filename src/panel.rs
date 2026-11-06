@@ -699,6 +699,7 @@ impl Panel {
             let (pill, color) = match group.safety {
                 Safety::Safe => ("safe", colors().safe),
                 Safety::Review => ("review", colors().review),
+                Safety::Manage => ("its tool", colors().muted),
             };
             // "node_modules · 2.1 GB in 14 places" → name, then the numbers muted.
             let (name, places) = group.label.split_once(" · ").map(|(a, b)| (a.to_string(), b.to_string())).unwrap_or((group.label.to_string(), String::new()));

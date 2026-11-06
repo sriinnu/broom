@@ -394,7 +394,9 @@ mod tests {
         let lines = ledger(&i);
         let parts: u64 = lines.iter().filter(|l| l.depth == 1).filter_map(|l| l.bytes).sum();
         assert_eq!(parts, i.container_used);
-        assert!(i.capacity >= i.container_used + i.free);
+        // Used and free are two reads a moment apart, while other tests
+        // write and delete temp files: allow for what moves in between.
+        assert!(i.capacity + (256 << 20) >= i.container_used + i.free, "{} < {} + {}", i.capacity, i.container_used, i.free);
     }
 
     /// `cargo test --release space::tests::print_ledger -- --ignored --nocapture`

@@ -154,6 +154,7 @@ fn safety_str(s: Safety) -> &'static str {
     match s {
         Safety::Safe => "safe",
         Safety::Review => "review",
+        Safety::Manage => "manage",
     }
 }
 

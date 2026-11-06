@@ -428,7 +428,9 @@ pub fn candidates(tree: &Tree, findings: &[Finding], query: &str) -> Vec<Candida
     // crowded out by the catalog. Normalised to the same shape as every other
     // group — largest first, capped — so the dedupe can compare node sets.
     for finding in findings {
-        if finding.nodes.is_empty() || (!words.is_empty() && !finding_matches(finding, &words)) {
+        // Manage findings (Docker's disk image, read-only caches) are for
+        // their own tools, never something to tick or trash.
+        if finding.nodes.is_empty() || finding.safety == Safety::Manage || (!words.is_empty() && !finding_matches(finding, &words)) {
             continue;
         }
         let mut matched: Vec<(u64, usize)> = finding.nodes.iter().map(|&ix| (tree.nodes[ix].size, ix)).collect();

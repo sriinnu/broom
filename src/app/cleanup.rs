@@ -261,13 +261,15 @@ impl Broom {
             let (tag, color) = match finding.safety {
                 Safety::Safe => ("Safe to delete", colors().safe),
                 Safety::Review => ("Review first", colors().review),
+                Safety::Manage => ("Use its tool", colors().muted),
             };
             let target = finding.nodes.first().copied().filter(|_| finding.path.is_some());
             let nodes = finding.nodes.clone();
             let in_view = results.is_some_and(|r| {
                 r.focus != Tree::ROOT && finding.nodes.iter().any(|&n| r.tree.is_ancestor_or_self(r.focus, n))
             });
-            let tick = results.map(|r| r.group_tick(&finding.nodes));
+            // A Manage finding is explained, never staged: no checkbox.
+            let tick = results.filter(|_| finding.safety != Safety::Manage).map(|r| r.group_tick(&finding.nodes));
             list = list.child(
                 div()
                     .id(("finding", i))

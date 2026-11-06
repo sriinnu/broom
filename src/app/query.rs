@@ -227,6 +227,7 @@ impl Broom {
                 let color = match group.safety {
                     Safety::Safe => colors().safe,
                     Safety::Review => colors().review,
+                    Safety::Manage => colors().muted,
                 };
                 let nodes = group.nodes.clone();
                 let biggest_dir = nodes.iter().copied().find(|&ix| r.tree.nodes[ix].kind == Kind::Dir);

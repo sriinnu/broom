@@ -12,6 +12,10 @@ pub enum Safety {
     Safe,
     /// Worth a look first: it may hold things you want to keep.
     Review,
+    /// Shown and sized, never staged: the Trash is the wrong tool (Docker's
+    /// disk image, read-only module caches, toolchains a manager tracks).
+    /// The blurb names the right one.
+    Manage,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,13 +41,29 @@ pub const CATALOG: &[Category] = &[
     Category { base: Base::Home, path: "Library/Developer/Xcode/DerivedData", title: "Xcode build files", blurb: "Xcode rebuilds these when you next build", safety: Safety::Safe },
     Category { base: Base::Home, path: "Library/Developer/Xcode/Archives", title: "Xcode archives", blurb: "Keep the ones you need to symbolicate crash logs", safety: Safety::Review },
     Category { base: Base::Home, path: "Library/Developer/Xcode/iOS DeviceSupport", title: "iOS device support", blurb: "Re-downloaded when a device next connects", safety: Safety::Safe },
-    Category { base: Base::Home, path: "Library/Developer/CoreSimulator/Devices", title: "iOS simulators", blurb: "Remove old ones with `xcrun simctl delete unavailable`", safety: Safety::Review },
+    Category { base: Base::Home, path: "Library/Developer/CoreSimulator/Devices", title: "iOS simulators", blurb: "Remove old ones with `xcrun simctl delete unavailable`, so Xcode knows they went", safety: Safety::Manage },
     Category { base: Base::Home, path: "Library/Application Support/MobileSync/Backup", title: "iPhone & iPad backups", blurb: "Old device backups; manage them in Finder", safety: Safety::Review },
-    Category { base: Base::Home, path: "Library/Containers/com.docker.docker", title: "Docker", blurb: "Images and volumes; prune them from Docker", safety: Safety::Review },
+    Category { base: Base::Home, path: "Library/Containers/com.docker.docker", title: "Docker", blurb: "Images and volumes live in one disk image; prune them in Docker (`docker system prune`)", safety: Safety::Manage },
     Category { base: Base::Home, path: "Library/Caches", title: "App caches", blurb: "Apps rebuild their caches as needed", safety: Safety::Safe },
     Category { base: Base::Home, path: ".npm", title: "npm cache", blurb: "Re-downloaded on the next install", safety: Safety::Safe },
     Category { base: Base::Home, path: ".cargo/registry", title: "Cargo registry", blurb: "Re-downloaded on the next build", safety: Safety::Safe },
     Category { base: Base::Home, path: ".gradle/caches", title: "Gradle caches", blurb: "Re-downloaded on the next build", safety: Safety::Safe },
+    Category { base: Base::Home, path: ".gradle/wrapper/dists", title: "Gradle versions", blurb: "Downloaded again when a project asks for one", safety: Safety::Safe },
+    Category { base: Base::Home, path: ".m2/repository", title: "Maven repository", blurb: "Re-downloaded on the next build", safety: Safety::Safe },
+    Category { base: Base::Home, path: ".bun/install/cache", title: "Bun cache", blurb: "Re-downloaded on the next install", safety: Safety::Safe },
+    Category { base: Base::Home, path: ".cocoapods/repos", title: "CocoaPods specs", blurb: "Fetched again by `pod install`", safety: Safety::Safe },
+    Category {
+        base: Base::Home,
+        path: "Library/pnpm/store",
+        title: "pnpm store",
+        blurb: "Projects' node_modules link into it, so it frees less than its size; the next install downloads again",
+        safety: Safety::Review,
+    },
+    Category { base: Base::Home, path: "go/pkg/mod", title: "Go modules", blurb: "Its files are read-only, so the Trash can't empty them; run `go clean -modcache`", safety: Safety::Manage },
+    Category { base: Base::Home, path: ".rustup/toolchains", title: "Rust toolchains", blurb: "`rustup toolchain list` shows them; `rustup toolchain uninstall` removes old ones", safety: Safety::Manage },
+    Category { base: Base::Home, path: ".cache/huggingface", title: "Hugging Face models", blurb: "Downloaded AI models; some are slow to fetch again, and something may still use them", safety: Safety::Review },
+    Category { base: Base::Home, path: ".ollama/models", title: "Ollama models", blurb: "Local AI models; `ollama list` shows them, `ollama rm` removes one", safety: Safety::Manage },
+    Category { base: Base::Home, path: "Library/Android/sdk/system-images", title: "Android system images", blurb: "Emulator images; remove them in Android Studio's SDK Manager", safety: Safety::Manage },
     Category { base: Base::Home, path: "Movies", title: "Movies", blurb: "Videos and editing projects", safety: Safety::Review },
     Category {
         base: Base::UserTemp,
@@ -237,19 +257,27 @@ fn from_tree_min(tree: &Tree, bases: &Bases, min_size: u64) -> Vec<Finding> {
         }
     }
 
-    // node_modules anywhere, counting nested ones once. Not inside an app or a
-    // tool's own folder (Electron apps, nvm, npm's cache, editor extensions):
-    // those are the app's, and "safe to delete" would be a lie there.
+    // Project folders anywhere: node_modules, build outputs, Python
+    // environments. Outermost only, so nested ones are counted once. Not
+    // inside an app or a tool's own folder (Electron apps, nvm, npm's cache,
+    // editor extensions): those are the app's, and "safe to delete" would be
+    // a lie there. Nor in the Trash, which has its own finding.
     let mut modules = Vec::new();
+    let mut outputs = Vec::new();
+    let mut envs = Vec::new();
     let mut stack = vec![Tree::ROOT];
     while let Some(ix) = stack.pop() {
         for &child in &tree.nodes[ix].children {
             let node = &tree.nodes[child];
-            if node.kind != Kind::Dir || Tree::is_bundled_name(&node.name) {
+            if node.kind != Kind::Dir || Tree::is_bundled_name(&node.name) || node.name.as_ref() == ".Trash" {
                 continue;
             }
             if node.name.as_ref() == "node_modules" {
                 modules.push(child);
+            } else if build_output(tree, child) {
+                outputs.push(child);
+            } else if python_env(tree, child) {
+                envs.push(child);
             } else {
                 stack.push(child);
             }
@@ -257,22 +285,113 @@ fn from_tree_min(tree: &Tree, bases: &Bases, min_size: u64) -> Vec<Finding> {
     }
     // Clone sharing isn't known here (pnpm installs them as clones), so start from the
     // allocated size and let the caller work out what deleting really frees.
-    let size: u64 = modules.iter().map(|&ix| tree.nodes[ix].size).sum();
-    if size >= min_size {
-        findings.push(Finding {
-            id: next_id(),
-            title: "node_modules",
-            blurb: format!("In {} projects; reinstall with your package manager", modules.len()),
-            safety: Safety::Safe,
-            size,
-            path: None,
-            nodes: modules,
-            pending: true,
-        });
-    }
+    let mut group = |nodes: Vec<usize>, title: &'static str, blurb: String, safety: Safety| {
+        let size: u64 = nodes.iter().map(|&ix| tree.nodes[ix].size).sum();
+        if size >= min_size && !nodes.is_empty() {
+            findings.push(Finding { id: next_id(), title, blurb, safety, size, path: None, nodes, pending: true });
+        }
+    };
+    let n = modules.len();
+    group(modules, "node_modules", format!("In {n} projects; reinstall with your package manager"), Safety::Safe);
+    // A folder git tracks files in is source, whatever its name: some teams
+    // commit Pods or build. Read-only (`git ls-files`), and only for these.
+    let git = Git::new();
+    outputs.retain(|&ix| !git.tracks(tree, ix));
+    envs.retain(|&ix| !git.tracks(tree, ix));
+    let n = outputs.len();
+    group(outputs, BUILD_OUTPUTS, format!("In {n} {}; the project's build makes them again", if n == 1 { "project" } else { "projects" }), Safety::Safe);
+    let n = envs.len();
+    group(envs, "Python environments", format!("{n} virtual {}; recreate with `uv sync` or `pip install -r`", if n == 1 { "environment" } else { "environments" }), Safety::Review);
 
     findings.sort_by(|a, b| b.size.cmp(&a.size));
     findings
+}
+
+pub const BUILD_OUTPUTS: &str = "Build outputs";
+
+/// Build folders, and the files that must sit beside one for Broom to call
+/// it the build's: a `target` next to `Cargo.toml` is Cargo's, one in
+/// Documents is somebody's. A name alone never decides.
+const OUTPUTS: &[(&str, &[&str])] = &[
+    ("target", &["Cargo.toml"]),
+    (".next", &["package.json"]),
+    (".nuxt", &["package.json"]),
+    (".svelte-kit", &["package.json"]),
+    (".turbo", &["package.json", "turbo.json"]),
+    (".parcel-cache", &["package.json"]),
+    (".angular", &["angular.json"]),
+    ("Pods", &["Podfile"]),
+    ("build", &["build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "pubspec.yaml"]),
+    (".gradle", &["build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"]),
+    (".build", &["Package.swift"]),
+    (".dart_tool", &["pubspec.yaml"]),
+    (".zig-cache", &["build.zig"]),
+    ("zig-cache", &["build.zig"]),
+    ("_build", &["mix.exs"]),
+    (".stack-work", &["stack.yaml"]),
+];
+
+/// `ix` is a project's build output: a known name with its tool's file
+/// beside it, or any folder the tool that made it marked as a cache with a
+/// `CACHEDIR.TAG` (cargo does; see bford.info/cachedir).
+fn build_output(tree: &Tree, ix: usize) -> bool {
+    let name = tree.nodes[ix].name.as_ref();
+    let has_file = |dir: usize, file: &str| tree.nodes[dir].children.iter().any(|&c| tree.nodes[c].kind == Kind::File && tree.nodes[c].name.as_ref() == file);
+    if has_file(ix, "CACHEDIR.TAG") {
+        return true;
+    }
+    let Some(parent) = tree.nodes[ix].parent else { return false };
+    OUTPUTS.iter().any(|(folder, beside)| *folder == name && beside.iter().any(|f| has_file(parent, f)))
+}
+
+/// Asks git, read-only, whether it tracks anything in a folder.
+struct Git {
+    /// Running `git` on a Mac without developer tools pops up an installer;
+    /// only ask when there's a real git to ask.
+    available: bool,
+}
+
+impl Git {
+    fn new() -> Self {
+        let available = ["/Library/Developer/CommandLineTools/usr/bin/git", "/Applications/Xcode.app/Contents/Developer/usr/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git"]
+            .iter()
+            .any(|p| Path::new(p).exists());
+        Git { available }
+    }
+
+    /// `ix` sits in a git checkout (a `.git` folder or worktree file above
+    /// it) and git tracks at least one file in it. Without git to ask, a
+    /// folder in a checkout counts as tracked: unknown is never junk.
+    fn tracks(&self, tree: &Tree, ix: usize) -> bool {
+        let mut at = tree.nodes[ix].parent;
+        let mut in_repo = false;
+        while let Some(n) = at {
+            if tree.nodes[n].children.iter().any(|&c| tree.nodes[c].name.as_ref() == ".git") {
+                in_repo = true;
+                break;
+            }
+            at = tree.nodes[n].parent;
+        }
+        if !in_repo {
+            return false;
+        }
+        if !self.available {
+            return true;
+        }
+        let path = tree.path_of(ix);
+        let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else { return true };
+        match std::process::Command::new("git").arg("-C").arg(parent).args(["ls-files", "--cached", "-z", "--"]).arg(name).output() {
+            Ok(out) if out.status.success() => !out.stdout.is_empty(),
+            // Not a checkout after all (a stray .git), or git failed: say tracked.
+            _ => true,
+        }
+    }
+}
+
+/// `ix` is a Python virtual environment: `pyvenv.cfg` at its top, which
+/// `venv`, `virtualenv` and `uv` all write.
+fn python_env(tree: &Tree, ix: usize) -> bool {
+    tree.nodes[ix].children.iter().any(|&c| tree.nodes[c].kind == Kind::File && tree.nodes[c].name.as_ref() == "pyvenv.cfg")
 }
 
 /// Where the catalog's base folders are, as paths inside a scanned tree.
@@ -469,5 +588,51 @@ mod tests {
         assert!(all.is_empty(), "{:?}", all.iter().map(|f| f.title).collect::<Vec<_>>());
         std::fs::remove_dir_all(&dir).unwrap();
     }
-}
 
+    /// Build outputs need their tool's file beside them, or a CACHEDIR.TAG;
+    /// a folder's name alone never makes it junk.
+    #[test]
+    fn build_outputs_need_evidence() {
+        let dir = std::env::temp_dir().join(format!("broom-outputs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let home = dir.join("home");
+        write(&home.join("code/crate/Cargo.toml"), 10);
+        write(&home.join("code/crate/target/debug/app"), 200_000);
+        write(&home.join("Documents/target/plan.pdf"), 300_000); // somebody's "target"
+        write(&home.join("code/web/package.json"), 10);
+        write(&home.join("code/web/.next/cache/x"), 100_000);
+        write(&home.join("code/odd/out/CACHEDIR.TAG"), 43);
+        write(&home.join("code/odd/out/blob"), 100_000);
+        write(&home.join("code/py/.venv/pyvenv.cfg"), 10);
+        write(&home.join("code/py/.venv/lib/x.py"), 100_000);
+        write(&home.join("code/notes/venv/readme.md"), 100_000); // no pyvenv.cfg
+        let tree = scan(&dir, &Progress::default(), &[], 2);
+        let findings = from_tree_min(&tree, &Bases { home: Some(home.clone()), user_temp: None }, 0);
+        let paths = |title: &str| -> Vec<PathBuf> {
+            let mut p: Vec<PathBuf> = findings.iter().filter(|f| f.title == title).flat_map(|f| f.nodes.iter().map(|&ix| tree.path_of(ix))).collect();
+            p.sort();
+            p
+        };
+        assert_eq!(paths(BUILD_OUTPUTS), vec![home.join("code/crate/target"), home.join("code/odd/out"), home.join("code/web/.next")]);
+        assert_eq!(paths("Python environments"), vec![home.join("code/py/.venv")]);
+        assert_eq!(findings.iter().find(|f| f.title == "Python environments").unwrap().safety, Safety::Review);
+
+        // In a git checkout, an output git tracks files in is source.
+        let repo = home.join("code/app");
+        write(&repo.join("Podfile"), 10);
+        write(&repo.join("Pods/Lib/lib.m"), 100_000);
+        write(&repo.join("Pods2/Podfile"), 10);
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(&repo).args(args).output().unwrap().status.success());
+        git(&["init", "-q"]);
+        git(&["add", "Pods"]);
+        write(&home.join("code/app2/.git/HEAD"), 10);
+        write(&home.join("code/app2/Cargo.toml"), 10);
+        write(&home.join("code/app2/target/debug/x"), 100_000);
+        let tree = scan(&dir, &Progress::default(), &[], 2);
+        let findings = from_tree_min(&tree, &Bases { home: Some(home.clone()), user_temp: None }, 0);
+        let outputs: Vec<PathBuf> = findings.iter().filter(|f| f.title == BUILD_OUTPUTS).flat_map(|f| f.nodes.iter().map(|&ix| tree.path_of(ix))).collect();
+        assert!(!outputs.contains(&repo.join("Pods")), "tracked Pods are source: {outputs:?}");
+        assert!(outputs.contains(&home.join("code/crate/target")), "outside any checkout it's fine");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
