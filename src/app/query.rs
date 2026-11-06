@@ -213,7 +213,7 @@ impl Broom {
                 if *intent == Intent::Delete && !r.collector.is_empty() {
                     card = card.child(
                         div().flex().justify_end().child(
-                            primary_button("ask-trash", "Review & move to Trash", colors().danger)
+                            primary_button("ask-trash", "Review and Move to Trash…", colors().danger)
                                 .on_click(cx.listener(|this, _, window, cx| this.open_review(window, cx))),
                         ),
                     );
@@ -227,6 +227,7 @@ impl Broom {
                 let color = match group.safety {
                     Safety::Safe => colors().safe,
                     Safety::Review => colors().review,
+                    Safety::Manage => colors().muted,
                 };
                 let nodes = group.nodes.clone();
                 let biggest_dir = nodes.iter().copied().find(|&ix| r.tree.nodes[ix].kind == Kind::Dir);

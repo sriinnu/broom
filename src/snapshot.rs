@@ -108,6 +108,20 @@ pub fn install(window: &mut Window, cx: &mut Context<Broom>) {
                     })
                     .ok();
                 }
+                // `right-click x y`: the secondary button, for context menus.
+                "right-click" => {
+                    let position = point(px(num(1)), px(num(2)));
+                    cx.update(|window, cx| {
+                        move_to(window, cx, position);
+                        let modifiers = gpui::Modifiers::default();
+                        window.dispatch_event(
+                            PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Right, position, modifiers, click_count: 1, first_mouse: false }),
+                            cx,
+                        );
+                        window.dispatch_event(PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Right, position, modifiers, click_count: 1 }), cx);
+                    })
+                    .ok();
+                }
                 // `key cmd-3`: type a keystroke, as the keymap sees it.
                 "key" => {
                     if let Some(Ok(keystroke)) = parts.get(1).map(|k| gpui::Keystroke::parse(k)) {
@@ -192,6 +206,43 @@ pub fn install(window: &mut Window, cx: &mut Context<Broom>) {
                         }
                         Some(Err(error)) => eprintln!("snapshot: panel {error:#}"),
                         None => eprintln!("snapshot: no panel window"),
+                    })
+                    .ok();
+                }
+                // `space`: open the Where Is My Space card.
+                "space" => {
+                    cx.update(|window, cx| {
+                        if let Some(broom) = crate::app::broom() {
+                            broom.update(cx, |b, cx| b.show_space(&crate::app::ShowSpace, window, cx));
+                        }
+                    })
+                    .ok();
+                }
+                // `merge` / `merge-confirm`: open Merge as Clones on the
+                // Duplicate files finding, and press its Merge button.
+                "merge" => {
+                    cx.update(|window, cx| {
+                        if let Some(broom) = crate::app::broom() {
+                            broom.update(cx, |b, cx| b.demo_open_merge(window, cx));
+                        }
+                    })
+                    .ok();
+                }
+                "merge-confirm" => {
+                    cx.update(|_, cx| {
+                        if let Some(broom) = crate::app::broom() {
+                            broom.update(cx, |b, cx| b.demo_confirm_merge(cx));
+                        }
+                    })
+                    .ok();
+                }
+                // `empty-confirm`: press Empty Trash on the open card. Only the
+                // (fake) home Trash is emptied in snapshot builds.
+                "empty-confirm" => {
+                    cx.update(|_, cx| {
+                        if let Some(broom) = crate::app::broom() {
+                            broom.update(cx, |b, cx| b.demo_confirm_empty_trash(cx));
+                        }
                     })
                     .ok();
                 }
@@ -302,6 +353,10 @@ enum Step {
     ShowPointer,
     /// Play back this many times slower from here on (1 for real time).
     SlowMotion(f64),
+    /// The review card mid-move with this many items falling in; nothing is trashed.
+    DropDemo(usize),
+    /// The demo move finishing: the lid may close.
+    DropSettle,
     Quit,
 }
 
@@ -322,6 +377,8 @@ fn parse(script: &str) -> Vec<Step> {
                 "hide-pointer" => Step::HidePointer,
                 "show-pointer" => Step::ShowPointer,
                 "slow-motion" => Step::SlowMotion(num(1).max(1.0)),
+                "drop-demo" => Step::DropDemo(num(1).max(1.0) as usize),
+                "drop-settle" => Step::DropSettle,
                 "quit" => Step::Quit,
                 other => {
                     eprintln!("video: unknown step {other:?}");
@@ -492,6 +549,12 @@ async fn record(this: WeakEntity<Broom>, output: String, script: String, cx: &mu
             Step::HidePointer => recorder.shown_pointer = false,
             Step::ShowPointer => recorder.shown_pointer = true,
             Step::SlowMotion(factor) => recorder.frame_time = 1.0 / (FPS * factor),
+            Step::DropDemo(count) => {
+                this.update(cx, |broom, cx| broom.demo_drop(count, cx)).ok();
+            }
+            Step::DropSettle => {
+                this.update(cx, |broom, _| broom.drop_settle()).ok();
+            }
             Step::Quit => break,
         }
     }

@@ -134,7 +134,7 @@ pub(super) fn path_tip(el: Stateful<gpui::Div>, path: String) -> Stateful<gpui::
     el.tooltip(move |_, cx| cx.new(|_| comic::PathCaption(path.clone())).into())
 }
 
-pub(super) fn icon_button(id: impl Into<gpui::ElementId>, glyph: &'static str, tooltip: &'static str) -> Stateful<gpui::Div> {
+pub(super) fn icon_button(id: impl Into<gpui::ElementId>, glyph: icons::Symbol, tooltip: &'static str) -> Stateful<gpui::Div> {
     div()
         .id(id)
         .size(px(20.))
@@ -147,7 +147,7 @@ pub(super) fn icon_button(id: impl Into<gpui::ElementId>, glyph: &'static str, t
         .cursor_pointer()
         .tooltip(move |_, cx| cx.new(|_| Tip(tooltip.into())).into())
         .hover(|s| s.bg(rgb(colors().border)).text_color(rgb(colors().text)))
-        .child(glyph)
+        .child(icons::inline_symbol(glyph, 13.))
 }
 
 /// The app icon, as the About card's brand mark (a 256 px copy of packaging/AppIcon.png).

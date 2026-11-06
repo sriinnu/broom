@@ -191,7 +191,7 @@ impl Broom {
                     .text_color(rgb(colors().muted))
                     .cursor_pointer()
                     .hover(|s| s.bg(rgb(colors().border)).text_color(rgb(colors().text)))
-                    .child("⎘")
+                    .child(icons::inline_symbol(icons::Symbol::DocOnDoc, 13.))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click({
                         let here = here.clone();
@@ -333,6 +333,22 @@ impl Broom {
                                     cx.new(|_| Tip("Local Time Machine snapshots, caches and re-downloadable iCloud files. macOS frees them on demand; About This Mac counts them as available.".into())).into()
                                 })
                                 .child(format!("+{} purgeable", format_size(volume.purgeable))),
+                        )
+                    })
+                    // The startup disk: the arithmetic behind its numbers.
+                    .when(i == 0, |d| {
+                        d.child(
+                            div()
+                                .id("where-is-my-space")
+                                .text_xs()
+                                .text_color(rgb(colors().accent))
+                                .cursor_pointer()
+                                .hover(|s| s.underline())
+                                .child("Where is my space? ›")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.show_space(&ShowSpace, window, cx);
+                                })),
                         )
                     }),
             );

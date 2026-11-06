@@ -35,7 +35,7 @@ impl SettingsWindow {
 impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = self.broom.update(cx, |b, cx| b.render_settings_window(window, cx));
-        div()
+        let root = div()
             .id("settings-window")
             .key_context("Settings")
             .track_focus(&self.focus)
@@ -50,7 +50,29 @@ impl Render for SettingsWindow {
             }))
             // ⌘, with Settings already in front: nothing more to open.
             .on_action(|_: &OpenSettings, window, _| window.activate())
-            .size_full()
+            .on_action(|_: &Zoom, window, _| window.zoom_window());
+        // The main window's commands, chosen from the menu or typed with
+        // Settings in front, go to the main window, as a Mac app's do: ⌘O,
+        // ⌘R and Go › Back shouldn't do nothing because Settings has focus.
+        let root = forward::<OpenFolder>(root);
+        let root = forward::<Rescan>(root);
+        let root = forward::<FullRescan>(root);
+        let root = forward::<StartOver>(root);
+        let root = forward::<GoBack>(root);
+        let root = forward::<GoForward>(root);
+        let root = forward::<GoUp>(root);
+        let root = forward::<FocusQuery>(root);
+        let root = forward::<SortBySize>(root);
+        let root = forward::<SortByName>(root);
+        let root = forward::<SortByModified>(root);
+        let root = forward::<ToggleRail>(root);
+        let root = forward::<ToggleCleanup>(root);
+        let root = forward::<CopyPath>(root);
+        let root = forward::<CopyRelativePath>(root);
+        let root = forward::<About>(root);
+        let root = forward::<EmptyTrash>(root);
+        let root = forward::<ShowSpace>(root);
+        root.size_full()
             .flex()
             .flex_col()
             .bg(rgb(colors().panel))
@@ -59,6 +81,27 @@ impl Render for SettingsWindow {
             .text_sm()
             .child(content)
     }
+}
+
+/// Handle `A` here by handing it to the main window.
+fn forward<A: gpui::Action + Clone>(root: Stateful<gpui::Div>) -> Stateful<gpui::Div> {
+    root.on_action(|action: &A, _, cx| forward_to_main(action.boxed_clone(), cx))
+}
+
+/// Bring the main window forward (opening it again if it was closed) and
+/// dispatch `action` there. Deferred: this runs inside the Settings window's
+/// dispatch, and updating another window from in there borrows the app twice.
+fn forward_to_main(action: Box<dyn gpui::Action>, cx: &mut App) {
+    cx.defer(move |cx| {
+        reopen(cx);
+        let main = cx.windows().into_iter().find_map(|w| w.downcast::<Broom>());
+        if let Some(main) = main {
+            let _ = main.update(cx, |_, window, cx| {
+                window.activate();
+                window.dispatch_action(action, cx);
+            });
+        }
+    });
 }
 
 fn settings_window_options(cx: &App) -> WindowOptions {
@@ -79,6 +122,16 @@ fn settings_window_options(cx: &App) -> WindowOptions {
 /// a Broom listener, because the new window's first render reads Broom.
 pub fn open_settings_window(cx: &mut App) {
     let Some(broom) = broom() else { return };
+    // A Move to Trash waiting on an answer (or under way) keeps the front:
+    // Settings opening over it would bury a destructive question, and a
+    // change of excludes or theme mid-move helps no one. Bring the card
+    // forward instead; ⌘, works again once it's answered.
+    if { let b = broom.read(cx); b.review.is_some() || b.empty_trash.is_some() || b.merge.is_some() || b.space.is_some() } {
+        if let Some(main) = cx.windows().into_iter().find_map(|w| w.downcast::<Broom>()) {
+            let _ = main.update(cx, |_, window, _| window.activate());
+            return;
+        }
+    }
     let open = broom.read(cx).prefs.as_ref().and_then(|p| p.window);
     if let Some(handle) = open {
         if handle.update(cx, |_, window, _| window.activate()).is_ok() {
@@ -144,6 +197,7 @@ impl Broom {
                 rows,
                 custom: cx.new(|cx| EditableTextState::new(StringStorage::default(), cx)),
                 exclude_input: cx.new(|cx| EditableTextState::new(StringStorage::default(), cx)),
+                protect_input: cx.new(|cx| EditableTextState::new(StringStorage::default(), cx)),
                 note: None,
                 note_epoch: 0,
                 salvaged: self.settings_salvaged.take(),

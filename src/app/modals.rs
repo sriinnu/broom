@@ -76,6 +76,18 @@ impl Broom {
     /// The backdrop was clicked: whichever card is up goes away (a review that
     /// is mid-delete stays until it's done).
     pub(super) fn close_any_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.empty_trash.is_some() {
+            self.close_empty_trash(&CloseEmptyTrash, window, cx);
+            return;
+        }
+        if self.merge.is_some() {
+            self.close_merge(&CloseMerge, window, cx);
+            return;
+        }
+        if self.space.is_some() {
+            self.close_space(&CloseSpace, window, cx);
+            return;
+        }
         if let Some(review) = &self.review {
             if review.working {
                 return;
@@ -93,6 +105,11 @@ impl Broom {
     pub(super) fn render_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (context, card) = match (&self.review, &self.modal) {
             (Some(review), _) => ("Review", self.render_review(review, cx).into_any_element()),
+            (None, _) if self.empty_trash.is_some() => {
+                ("EmptyTrash", self.render_empty_trash(self.empty_trash.as_ref().expect("checked"), cx))
+            }
+            (None, _) if self.merge.is_some() => ("Merge", self.render_merge(self.merge.as_ref().expect("checked"), cx)),
+            (None, _) if self.space.is_some() => ("Space", self.render_space(self.space.as_ref().expect("checked"), cx)),
             (None, Some(p)) => (
                 match p.tab {
                     PanelTab::Help => "Panel",
@@ -377,6 +394,8 @@ impl Broom {
             _ => return div().into_any_element(),
         };
         let node = menu.node;
+        // Protected rows offer nothing that would move them (`Results::shielded`).
+        let actionable = actionable && !matches!(&self.screen, Screen::Results(r) if r.shielded(node));
 
         let item = |id: &'static str, label: &'static str| {
             div()
@@ -441,6 +460,39 @@ impl Broom {
                 cx.notify();
                 this.open_review(window, cx);
             })));
+        }
+        // The protect list, from where you see the thing.
+        if let Screen::Results(r) = &self.screen {
+            if node != Tree::ROOT && r.tree.nodes[node].kind != Kind::Other {
+                let own = r.protected.contains(&node);
+                if own {
+                    items.push(item("menu-protect", "Offer This Again").on_click({
+                        let path = path.clone();
+                        cx.listener(move |this, _, _, cx| {
+                            this.context_menu = None;
+                            this.set_protected(path.clone(), false, cx);
+                        })
+                    }));
+                } else if !r.shielded(node) {
+                    items.push(item("menu-protect", "Never Offer This").on_click({
+                        let path = path.clone();
+                        cx.listener(move |this, _, _, cx| {
+                            this.context_menu = None;
+                            this.set_protected(path.clone(), true, cx);
+                        })
+                    }));
+                } else {
+                    // Inside or above something protected: say so, offer nothing.
+                    items.push(
+                        div()
+                            .id("menu-protected")
+                            .px_2()
+                            .py_1()
+                            .text_color(rgb(colors().muted))
+                            .child(if r.holds_protected.contains(&node) { "Holds Something Protected" } else { "Inside Something Protected" }),
+                    );
+                }
+            }
         }
 
         deferred(

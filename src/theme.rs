@@ -286,11 +286,13 @@ pub fn colors() -> &'static Palette {
 /// Switch to `name` in `appearance` and repaint every window.
 ///
 /// Light and Dark also force the window chrome to match; Auto hands it back to
-/// macOS and reads what it's set to. Classic is dark whatever is asked, and
-/// leaves the chrome alone, as it always has.
+/// macOS and reads what it's set to. Classic is dark whatever is asked, so its
+/// chrome is forced dark too: otherwise, on a Mac set to light, the Settings
+/// window's title bar (and every open panel and alert) came up light over a
+/// dark window.
 pub fn apply(name: ThemeName, appearance: Appearance, cx: &mut App) {
     let forced = match appearance {
-        _ if !name.has_light() => None,
+        _ if !name.has_light() => Some(WindowAppearance::Dark),
         Appearance::Auto => None,
         Appearance::Light => Some(WindowAppearance::Light),
         Appearance::Dark => Some(WindowAppearance::Dark),

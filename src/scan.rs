@@ -880,7 +880,7 @@ pub struct Volume {
     pub purgeable: u64,
 }
 
-fn statvfs(path: &Path) -> Option<(u64, u64)> {
+pub(crate) fn statvfs(path: &Path) -> Option<(u64, u64)> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
     let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;

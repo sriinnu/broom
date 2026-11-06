@@ -23,6 +23,10 @@ pub(super) struct Results {
     /// Staged for the Trash (the "cleanup plan"): top-level nodes only, never
     /// one inside another.
     pub(super) collector: Vec<usize>,
+    /// What every checkbox shows, worked out once per plan rather than per
+    /// row: rows ask on every frame, and walking each staged node's ancestry
+    /// for each of them made a big plan lag. See `tick`.
+    pub(super) tick_index: std::cell::RefCell<Option<TickIndex>>,
     pub(super) list_scroll: UniformListScrollHandle,
     /// The focused folder's children in list order (`sort`); the chart keeps size order.
     pub(super) order: Vec<usize>,
@@ -85,6 +89,10 @@ pub(super) struct Results {
     /// When the banner is a move to the Trash: what it freed, for the count-up
     /// and the comparison. Cleared by any other banner.
     pub(super) freed: Option<Freed>,
+    /// Each duplicate the "Duplicate files" finding lists, with the copy it
+    /// duplicates: what Merge as Clones needs. Paths, so a tree change can't
+    /// point them at the wrong node.
+    pub(super) dupe_pairs: Vec<duplicates::Pair>,
     /// Dust drifting off where the trashed slices were, for a moment.
     pub(super) dust: Option<Rc<delight::Puff>>,
     pub(super) color_by: ColorBy,
@@ -95,6 +103,18 @@ pub(super) struct Results {
     pub(super) legend_hover: Option<Category>,
     /// Folders that look like someone's home folder (`home_folders`).
     pub(super) homes: Vec<usize>,
+    /// What's on the protect list (Settings › Protected) in this tree, and
+    /// every folder holding one: neither can be staged. See `protect`.
+    pub(super) protected: HashSet<usize>,
+    pub(super) holds_protected: HashSet<usize>,
+    /// What the findings would have offered but for the protect list, so the
+    /// panel can say it left them out.
+    pub(super) not_offered: Vec<PathBuf>,
+    /// Project folders (see `findings::PROJECT_FINDINGS`) a build touched in
+    /// the last week, with when: listed, but not staged with the rest.
+    pub(super) recent: HashMap<usize, SystemTime>,
+    /// Project findings unfolded in the panel, by title.
+    pub(super) unfolded: HashSet<&'static str>,
     /// The query at the centre of the current ask state.
     pub(super) query: SharedString,
     pub(super) ask: AskState,
@@ -135,6 +155,8 @@ pub(super) struct Freed {
     pub(super) items: usize,
     /// The lifetime milestone this cleanup carried the tally past, if any.
     pub(super) milestone: Option<u64>,
+    /// Set when this was Empty Trash rather than a move to it.
+    pub(super) emptied: Option<EmptiedNote>,
 }
 
 impl Results {
@@ -228,6 +250,7 @@ impl Results {
             anim_start: clock::now(),
             chart_bounds: Rc::default(),
             collector: Vec::new(),
+            tick_index: Default::default(),
             list_scroll: UniformListScrollHandle::new(),
             order: Vec::new(),
             sort,
@@ -256,11 +279,17 @@ impl Results {
             banner_version: 0,
             last_trashed: Vec::new(),
             freed: None,
+            dupe_pairs: Vec::new(),
             dust: None,
             color_by,
             categories: HashMap::new(),
             legend_hover: None,
             homes: Vec::new(),
+            protected: HashSet::new(),
+            holds_protected: HashSet::new(),
+            not_offered: Vec::new(),
+            recent: HashMap::new(),
+            unfolded: HashSet::new(),
             query: SharedString::default(),
             ask: AskState::Idle,
             matches: None,
@@ -528,6 +557,7 @@ impl Results {
             || self.tree.nodes[ix].parent.is_none()
             || self.tree.nodes[ix].kind == Kind::Other
             || self.homes.contains(&ix)
+            || self.shielded(ix)
         {
             return;
         }
@@ -550,17 +580,90 @@ impl Results {
             && self.tree.nodes[ix].parent.is_some()
             && self.tree.nodes[ix].kind != Kind::Other
             && !self.homes.contains(&ix)
+            && !self.shielded(ix)
     }
 
-    /// What the checkbox on `ix` shows.
+    /// `ix` is protected, inside something protected, or holds something
+    /// protected: moving it to the Trash would move a protected thing.
+    pub(super) fn shielded(&self, ix: usize) -> bool {
+        if self.protected.is_empty() {
+            return false;
+        }
+        if self.holds_protected.contains(&ix) {
+            return true;
+        }
+        let mut at = Some(ix);
+        while let Some(n) = at {
+            if self.protected.contains(&n) {
+                return true;
+            }
+            at = self.tree.nodes[n].parent;
+        }
+        false
+    }
+
+    /// Take the protect list into account: mark what's protected, take it
+    /// out of the plan, the findings and the duplicate pairs, and note what
+    /// the findings left out. Safe to run again whenever the list changes.
+    pub(super) fn protect(&mut self, list: &[PathBuf]) {
+        self.protected.clear();
+        self.holds_protected.clear();
+        for p in list {
+            // Protecting a folder above the scanned one protects all of it.
+            if self.tree.root_path.starts_with(p) {
+                self.protected.insert(Tree::ROOT);
+                continue;
+            }
+            let found = self.tree.find(p).or_else(|| self.tree.find(&p.canonicalize().ok()?));
+            if let Some(ix) = found {
+                self.protected.insert(ix);
+                let mut at = self.tree.nodes[ix].parent;
+                while let Some(n) = at {
+                    if !self.holds_protected.insert(n) {
+                        break;
+                    }
+                    at = self.tree.nodes[n].parent;
+                }
+            }
+        }
+        let before = self.collector.len();
+        let shielded: Vec<usize> = self.collector.iter().copied().filter(|&c| self.shielded(c)).collect();
+        self.collector.retain(|c| !shielded.contains(c));
+        if self.collector.len() != before {
+            self.collector_frees.set(None);
+        }
+        let mut skipped = findings::shield(&mut self.findings, &self.tree, list);
+        self.dupe_pairs.retain(|p| crate::protect::blocking(&p.extra, list).is_none());
+        // Keep what earlier passes left out (a refresh re-offers nothing
+        // the list still covers, so this only grows until a rescan).
+        skipped.extend(self.not_offered.drain(..).filter(|p| crate::protect::blocking(p, list).is_some()));
+        skipped.sort();
+        skipped.dedup();
+        self.not_offered = skipped;
+    }
+
+    /// What the checkbox on `ix` shows: on if staged, implied if a folder
+    /// above it is, mixed if something below it is.
     pub(super) fn tick(&self, ix: usize) -> Tick {
-        if self.collector.contains(&ix) {
+        let mut cache = self.tick_index.borrow_mut();
+        // The plan is changed in place from several places, so the cache
+        // checks it hasn't moved on rather than trusting to be told.
+        let fresh = cache.as_ref().is_some_and(|t| t.matches(&self.tree, &self.collector));
+        if !fresh {
+            *cache = Some(TickIndex::new(&self.tree, &self.collector));
+        }
+        let index = cache.as_ref().expect("just built");
+        if index.staged.contains(&ix) {
             return Tick::On;
         }
-        if self.collector.iter().any(|&c| self.tree.is_ancestor_or_self(c, ix)) {
-            return Tick::Implied;
+        let mut up = self.tree.nodes[ix].parent;
+        while let Some(p) = up {
+            if index.staged.contains(&p) {
+                return Tick::Implied;
+            }
+            up = self.tree.nodes[p].parent;
         }
-        if self.collector.iter().any(|&c| self.tree.is_ancestor_or_self(ix, c)) {
+        if index.above.contains(&ix) {
             return Tick::Mixed;
         }
         Tick::Off
@@ -615,7 +718,7 @@ impl Results {
         let tree = &self.tree;
         let mut wanted: HashSet<usize> = self.collector.iter().copied().collect();
         let start = wanted.len();
-        wanted.extend(rows.iter().copied().filter(|&ix| ix != Tree::ROOT && tree.nodes[ix].parent.is_some() && tree.nodes[ix].kind != Kind::Other && !self.homes.contains(&ix)));
+        wanted.extend(rows.iter().copied().filter(|&ix| ix != Tree::ROOT && tree.nodes[ix].parent.is_some() && tree.nodes[ix].kind != Kind::Other && !self.homes.contains(&ix) && !self.shielded(ix)));
         if wanted.len() == start {
             return;
         }
@@ -706,4 +809,38 @@ pub(super) fn home_folders(tree: &Tree) -> Vec<usize> {
         level = next;
     }
     homes
+}
+
+/// The plan, indexed for `Results::tick`: the staged nodes, and every folder
+/// above one of them.
+pub(super) struct TickIndex {
+    tree: *const Tree,
+    nodes: usize,
+    plan: Vec<usize>,
+    staged: HashSet<usize>,
+    above: HashSet<usize>,
+}
+
+impl TickIndex {
+    fn new(tree: &Arc<Tree>, plan: &[usize]) -> Self {
+        let staged: HashSet<usize> = plan.iter().copied().collect();
+        let mut above = HashSet::new();
+        for &c in plan {
+            let mut up = tree.nodes[c].parent;
+            while let Some(p) = up {
+                // Already walked from here up by an earlier sibling.
+                if !above.insert(p) {
+                    break;
+                }
+                up = tree.nodes[p].parent;
+            }
+        }
+        TickIndex { tree: Arc::as_ptr(tree), nodes: tree.nodes.len(), plan: plan.to_vec(), staged, above }
+    }
+
+    /// Built from this tree and this plan. A plan compare is a memcmp, far
+    /// cheaper than the ancestry walks it saves.
+    fn matches(&self, tree: &Arc<Tree>, plan: &[usize]) -> bool {
+        self.tree == Arc::as_ptr(tree) && self.nodes == tree.nodes.len() && self.plan == plan
+    }
 }

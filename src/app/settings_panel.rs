@@ -448,6 +448,102 @@ impl Broom {
                 ),
         );
 
+        // --- Protected ------------------------------------------------------------
+        card = card.child(
+            div()
+                .px_3()
+                .py_2()
+                .rounded(theme::radius(8.))
+                .bg(rgb(colors().card))
+                .border_1()
+                .border_color(rgb(colors().border))
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(div().text_sm().child("Protected"))
+                .child(div().text_xs().text_color(rgb(colors().muted)).child(
+                    "Still scanned and shown, but never offered in a finding and never moved to the Trash, nor anything holding them, by you or an agent. Right-click a row › Never Offer This.",
+                ))
+                .child(
+                    div().flex().flex_col().gap_1().children(
+                        self.settings.protected.iter().enumerate().map(|(ix, path)| {
+                            let path = path.clone();
+                            div()
+                                .id(("protect-item", ix))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap_2()
+                                .child(div().text_xs().font_family(theme::current().mono).truncate().child(path.clone()))
+                                .child(
+                                    div()
+                                        .id(("protect-remove", ix))
+                                        .text_xs()
+                                        .text_color(rgb(colors().danger))
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.settings.protected.retain(|p| *p != path);
+                                            let _ = settings::save(&this.settings);
+                                            // What it held back has to be found again to be offered.
+                                            this.refresh_in_place(cx);
+                                            cx.notify();
+                                        }))
+                                        .child("✕"),
+                                )
+                        }),
+                    ),
+                )
+                .child(
+                    div().flex().gap_2().items_center().child(
+                        div()
+                            .flex_1()
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(
+                                text_input("protect-path")
+                                    .placeholder("e.g. ~/Projects/thesis")
+                                    .placeholder_color(theme::overlay(0.5))
+                                    .caret_color(theme::input_caret())
+                                    .selection_color(theme::input_selection())
+                                    .state(s.protect_input.downgrade())
+                                    .caret_blink_interval_500ms()
+                                    .w_full()
+                                    .h(px(28.))
+                                    .px_2()
+                                    .min_h_auto()
+                                    .rounded(theme::radius(6.))
+                                    .border_1()
+                                    .border_color(field_border(&s.protect_input, window, cx))
+                                    .bg(rgb(colors().bg))
+                                    .text_size(px(12.))
+                                    // One line as tall as the field inside its border: the element draws
+                                    // from the top, so this, not flex, is what centres the text.
+                                    .line_height(px(26.)),
+                            ),
+                    )
+                    .child(
+                        button("protect-add", "Add").on_click(cx.listener(|this, _, _, cx| {
+                            let text = this.prefs.as_ref().and_then(|p| {
+                                let input = p.settings.protect_input.read(cx);
+                                let text = input.as_str();
+                                if text.trim().is_empty() { None } else { Some(text.to_string()) }
+                            });
+                            if let Some(path) = text {
+                                if !this.settings.protected.contains(&path) {
+                                    this.settings.protected.push(path);
+                                    let _ = settings::save(&this.settings);
+                                    this.apply_protection();
+                                    this.collector_changed(cx);
+                                }
+                                if let Some(p) = &mut this.prefs {
+                                    p.settings.protect_input.update(cx, |input, cx| input.emplace("", cx));
+                                }
+                                cx.notify();
+                            }
+                        })),
+                    ),
+                ),
+        );
+
         // --- API keys ----------------------------------------------------------
         card = card
             .child(

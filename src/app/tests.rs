@@ -46,6 +46,40 @@ mod pick_tests {
             .collect()
     }
 
+    /// Protected things, what's inside them and what holds them can't be
+    /// staged by any route, and protecting something takes it off the plan.
+    #[test]
+    fn protected_rows_cannot_be_staged() {
+        let root = std::env::temp_dir().join(format!("broom-protect-rows-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let tree = tree_with_three(&root);
+        let mut r = results_for(&root, &tree);
+        let (alpha, beta) = (row_named(&tree, "alpha"), row_named(&tree, "beta"));
+        let a_file = tree.nodes[alpha].children[0];
+        r.collect(alpha);
+        assert_eq!(r.collector, vec![alpha]);
+
+        r.protect(&[root.join("alpha/a.bin")]);
+        assert!(r.collector.is_empty(), "protecting took the folder holding it off the plan");
+        assert!(!r.stageable(alpha), "holds something protected");
+        assert!(!r.stageable(a_file), "protected itself");
+        assert!(r.stageable(beta));
+        r.collect(alpha);
+        assert!(r.collector.is_empty(), "collect");
+        r.stage_rows(&[alpha, a_file]);
+        assert!(r.collector.is_empty(), "stage_rows");
+        r.toggle_group(&[alpha, a_file]);
+        assert!(r.collector.is_empty(), "toggle_group");
+        r.toggle_staged(a_file);
+        assert!(r.collector.is_empty(), "toggle_staged");
+
+        r.protect(&[root.join("alpha")]);
+        assert!(!r.stageable(a_file), "inside something protected");
+        r.protect(&[]);
+        assert!(r.stageable(alpha) && r.stageable(a_file), "off the list, back to normal");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn shift_click_takes_the_range() {
         let root = std::env::temp_dir().join(format!("broom-pick-{}", std::process::id()));
@@ -642,5 +676,57 @@ mod column_tests {
     #[test]
     fn floors_hold_even_when_nothing_fits() {
         assert_eq!(fit_columns([360.0, 680.0, 560.0], 400.0), [150.0, 220.0, 240.0]);
+    }
+}
+
+#[cfg(test)]
+mod tick_tests {
+    use super::*;
+
+    /// The definition `tick` had before it was indexed, kept as the oracle.
+    fn naive(r: &Results, ix: usize) -> Tick {
+        if r.collector.contains(&ix) {
+            Tick::On
+        } else if r.collector.iter().any(|&c| r.tree.is_ancestor_or_self(c, ix)) {
+            Tick::Implied
+        } else if r.collector.iter().any(|&c| r.tree.is_ancestor_or_self(ix, c)) {
+            Tick::Mixed
+        } else {
+            Tick::Off
+        }
+    }
+
+    #[test]
+    fn indexed_ticks_match_the_definition_as_the_plan_changes() {
+        let root = std::env::temp_dir().join(format!("broom-tick-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for rel in ["a/x/1.bin", "a/x/2.bin", "a/y/3.bin", "b/z/w/4.bin", "b/5.bin", "c/6.bin"] {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, vec![7u8; 4096]).unwrap();
+        }
+        let tree = scan::scan(&root, &scan::Progress::default(), &[], settings::Settings::default().outline_depth);
+        let mut r = Results::new(tree.clone(), Vec::new(), Duration::ZERO, root.clone(), ColorBy::Folder, SortBy::Size, true, false);
+        let all: Vec<usize> = (0..r.tree.nodes.len()).collect();
+        let check = |r: &Results| {
+            for &ix in &all {
+                assert_eq!(r.tick(ix), naive(r, ix), "node {ix} with plan {:?}", r.collector);
+            }
+        };
+        check(&r);
+        // Stage, unstage and restage in an order that hits every state, the
+        // way the UI does: some through `collect`, some by editing in place.
+        for &ix in all.iter().rev() {
+            r.collect(ix);
+            check(&r);
+        }
+        let first = r.collector[0];
+        r.collector.retain(|&c| c != first);
+        check(&r);
+        for &ix in &all {
+            r.toggle_staged(ix);
+            check(&r);
+        }
+        std::fs::remove_dir_all(&root).ok();
     }
 }

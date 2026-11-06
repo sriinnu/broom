@@ -9,7 +9,13 @@
 //!
 //! Same scanner, same ask engine, same safety rules as the window: nothing is
 //! deleted outright, only moved to the Trash, and `clean` without `--yes` is a
-//! dry run. `--json` prints one object on stdout for a program to read; without
+//! dry run.
+//!
+//! This is the surface agents drive, so the line is hard: the worst any call
+//! here can do is put something in the Trash, where a person can take it back.
+//! Emptying the Trash, deleting for good and rewriting files (Merge as
+//! Clones) belong to the window, behind a person's click on a confirm card.
+//! `agents_can_only_move_to_the_trash` below fails the build if that slips. `--json` prints one object on stdout for a program to read; without
 //! it the output is for a person. Exit codes: 0 done, 1 something failed,
 //! 2 usage. Progress goes to stderr, never stdout.
 
@@ -110,6 +116,11 @@ fn tilde(path: &Path) -> String {
 struct Scanned {
     tree: Tree,
     findings: Vec<Finding>,
+    /// Settings › Protected, expanded: never offered, and `trashcan::send`
+    /// refuses them however an agent asks.
+    protected: Vec<PathBuf>,
+    /// What the findings would have offered but for that list.
+    not_offered: Vec<PathBuf>,
     files: u64,
     seconds: f64,
 }
@@ -128,19 +139,22 @@ fn scan_root(root: &Path, quiet: bool) -> Result<Scanned, String> {
     let t0 = Instant::now();
     let progress = scan::Progress::default();
     let tree = scan::scan(&root, &progress, &settings.exclude_paths(), settings.outline_depth);
-    let findings = findings::from_tree(&tree, &findings::Bases::for_root(&tree.root_path));
+    let mut findings = findings::from_tree(&tree, &findings::Bases::for_root(&tree.root_path));
+    let protected = settings.protect_paths();
+    let not_offered = findings::shield(&mut findings, &tree, &protected);
     let files = progress.files.load(std::sync::atomic::Ordering::Relaxed);
     let seconds = t0.elapsed().as_secs_f64();
     if !quiet {
         eprintln!("{} files, {} in {seconds:.1}s", format_count(files), format_size(tree.nodes[Tree::ROOT].size));
     }
-    Ok(Scanned { tree, findings, files, seconds })
+    Ok(Scanned { tree, findings, protected, not_offered, files, seconds })
 }
 
 fn safety_str(s: Safety) -> &'static str {
     match s {
         Safety::Safe => "safe",
         Safety::Review => "review",
+        Safety::Manage => "manage",
     }
 }
 
@@ -200,6 +214,7 @@ fn cmd_scan(args: &[String]) -> i32 {
             "seconds": s.seconds,
             "top": top.iter().map(|&ix| node_json(tree, ix)).collect::<Vec<_>>(),
             "findings": s.findings.iter().map(|f| finding_json(tree, f)).collect::<Vec<_>>(),
+            "not_offered_protected": s.not_offered,
         });
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
         return 0;
@@ -220,6 +235,9 @@ fn cmd_scan(args: &[String]) -> i32 {
             println!("{:>10}  {:<7} {}  · {}", format_size(f.size), safety_str(f.safety), f.title, f.blurb);
         }
     }
+    if !s.not_offered.is_empty() {
+        println!("\nNot offered (protected in Settings): {}", s.not_offered.iter().map(|p| tilde(p)).collect::<Vec<_>>().join(", "));
+    }
     0
 }
 
@@ -238,7 +256,16 @@ fn find(query: &str, root: &Path, ask_reader: bool, quiet: bool) -> Result<Found
     let scanned = scan_root(root, quiet)?;
     let groups = ask::candidates(&scanned.tree, &scanned.findings, query);
     let homes: Vec<usize> = scanned.tree.find(&home()).into_iter().collect();
-    let folders = groups.iter().map(|g| ask::collectable(&scanned.tree, &homes, g, Scope::WholeTree, Tree::ROOT)).collect();
+    // Protected folders are never offered, so an agent never sees them as
+    // something to trash (and `trashcan::send` would refuse them anyway).
+    let folders = groups
+        .iter()
+        .map(|g| {
+            let mut f = ask::collectable(&scanned.tree, &homes, g, Scope::WholeTree, Tree::ROOT);
+            f.retain(|&n| crate::protect::blocking(&scanned.tree.path_of(n), &scanned.protected).is_none());
+            f
+        })
+        .collect();
     let reader = ask_reader.then(|| {
         let ctx = ask::AskContext { scan_root: scanned.tree.root_path.clone(), focused: None };
         ask::resolve(&ask::providers(), query, &ctx, &groups)
@@ -382,7 +409,12 @@ struct Trashed {
 /// path and the rest still go. `frees` is what the lot would really free,
 /// measured before anything moves.
 fn trash_paths(paths: &[PathBuf], quiet: bool) -> Trashed {
-    let frees = scan::frees_of(paths);
+    // Measured before anything moves (after, there's nothing to measure).
+    // Protected paths won't move, so they don't count; if something else
+    // fails too, the count is what the moved ones free on their own.
+    let (allowed, _) = crate::protect::sort_out(paths, &crate::protect::current());
+    let all = scan::frees_of(&allowed);
+    let each: Vec<u64> = if allowed.len() > 1 { allowed.iter().map(|p| scan::frees_of(std::slice::from_ref(p))).collect() } else { vec![all; allowed.len()] };
     let mut gone = Vec::new();
     let mut failed = Vec::new();
     for p in paths {
@@ -396,6 +428,7 @@ fn trash_paths(paths: &[PathBuf], quiet: bool) -> Trashed {
             Err(e) => failed.push((p.clone(), e)),
         }
     }
+    let frees = if gone.len() == allowed.len() { all } else { allowed.iter().zip(&each).filter(|(p, _)| gone.contains(p)).map(|(_, f)| f).sum() };
     Trashed { gone, failed, frees }
 }
 
@@ -587,5 +620,26 @@ mod tests {
         assert_eq!(run(&["broom".into(), "find".into()]), Some(2));
         assert_eq!(run(&["broom".into(), "trash".into()]), Some(2));
         assert_eq!(run(&["broom".into(), "scan".into(), "a".into(), "b".into()]), Some(2));
+    }
+
+    /// The CLI (what scripts and agents run) must never reach anything that
+    /// deletes for good or rewrites files: only `trashcan::send`, the move to
+    /// the Trash. Reads this file's own code, above the tests.
+    #[test]
+    fn agents_can_only_move_to_the_trash() {
+        let code = include_str!("cli.rs");
+        let code = &code[..code.find("#[cfg(test)]").expect("tests marker")];
+        assert_eq!(forbidden_in(code), Vec::<&str>::new());
+        // And the check really bites: a planted call is caught.
+        assert_eq!(forbidden_in("fn x() { std::fs::remove_dir_all(p); }"), vec!["remove_dir"]);
+        assert_eq!(forbidden_in("crate::trashcan::empty(&dirs)"), vec!["trashcan::empty"]);
+    }
+
+    fn forbidden_in(code: &str) -> Vec<&'static str> {
+        const FORBIDDEN: &[&str] = &[
+            "remove_file", "remove_dir", "unlink", "rmdir", "Command::new",
+            "trashcan::empty", "empty_with_finder", "duplicates::merge", "clonefile", "rename(",
+        ];
+        FORBIDDEN.iter().copied().filter(|f| code.contains(f)).collect()
     }
 }

@@ -429,7 +429,7 @@ impl Broom {
                     .when(is_hovered && node.kind != Kind::Other, |d| {
                         let path2 = path.clone();
                         d.child(
-                            icon_button(("cp-path", ix), "⎘", "Copy Path").on_click(cx.listener(
+                            icon_button(("cp-path", ix), icons::Symbol::DocOnDoc, "Copy Path").on_click(cx.listener(
                                 move |_, _, _, cx| {
                                     cx.stop_propagation();
                                     cx.write_to_clipboard(ClipboardItem::new_string(path2.to_string_lossy().into_owned()));
@@ -437,7 +437,7 @@ impl Broom {
                             )),
                         )
                         .child(
-                            icon_button(("reveal", ix), "⌕", "Reveal in Finder").on_click(cx.listener(
+                            icon_button(("reveal", ix), icons::Symbol::Magnifier, "Reveal in Finder").on_click(cx.listener(
                                 move |_, _, _, cx| {
                                     cx.stop_propagation();
                                     cx.reveal_path(&path);

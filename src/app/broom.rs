@@ -20,6 +20,12 @@ pub struct Broom {
     pub(super) fitted: [f32; 3],
     /// The review card before a move to the Trash, if open.
     pub(super) review: Option<ReviewState>,
+    /// The Empty Trash card, if open.
+    pub(super) empty_trash: Option<EmptyTrashState>,
+    /// The Merge as Clones card, if open.
+    pub(super) merge: Option<MergeState>,
+    /// The Where Is My Space card, if open.
+    pub(super) space: Option<SpaceState>,
     pub(super) focus_handle: FocusHandle,
     pub(super) error: Option<String>,
     pub(super) access: Access,
@@ -116,6 +122,11 @@ impl Render for Broom {
             .on_action(cx.listener(Self::open_selected))
             .on_action(cx.listener(Self::toggle_selected))
             .on_action(cx.listener(Self::close_review))
+            .on_action(cx.listener(Self::open_empty_trash))
+            .on_action(cx.listener(Self::close_empty_trash))
+            .on_action(cx.listener(Self::close_merge))
+            .on_action(cx.listener(Self::show_space))
+            .on_action(cx.listener(Self::close_space))
             .on_action(cx.listener(Self::copy_path))
             .on_action(cx.listener(Self::copy_relative_path))
             .on_action(cx.listener(|this, _: &SortBySize, _, cx| this.choose_sort(SortBy::Size, cx)))
@@ -189,6 +200,9 @@ impl Broom {
             pane_drag: Rc::default(),
             fitted: [settings.rail_width, settings.navigator_width, settings.cleanup_width],
             review: None,
+            empty_trash: None,
+            merge: None,
+            space: None,
             focus_handle,
             error: None,
             access,
@@ -291,6 +305,31 @@ impl Broom {
     #[cfg(feature = "snapshot")]
     pub fn showing_results(&self) -> bool {
         matches!(self.screen, Screen::Results(_))
+    }
+
+    /// For the recorder: open the review card mid-move, with `count` of the
+    /// root's children tumbling in, and nothing really moved. `drop_settle`
+    /// is the move finishing. For looking at the drop, not for testing Trash.
+    #[cfg(feature = "snapshot")]
+    pub fn demo_drop(&mut self, count: usize, cx: &mut Context<Self>) {
+        let Some(r) = self.results() else { return };
+        let children: Vec<usize> = (0..r.tree.nodes.len()).filter(|&ix| r.tree.nodes[ix].parent == Some(Tree::ROOT)).collect();
+        if children.is_empty() {
+            return;
+        }
+        let items: Vec<usize> = (0..count).map(|i| children[i % children.len()]).collect();
+        let sizes: Vec<(scan::Kind, u64)> = items.iter().map(|&ix| (r.tree.nodes[ix].kind, r.tree.nodes[ix].size)).collect();
+        let bytes = sizes.iter().map(|&(_, s)| s).sum();
+        let drop = trashcan::Drop::new(trashcan::Item::from_sizes(&sizes), bytes);
+        self.review = Some(ReviewState { items, frees: HashMap::new(), working: true, drop: Some(drop) });
+        cx.notify();
+    }
+
+    #[cfg(feature = "snapshot")]
+    pub fn drop_settle(&mut self) {
+        if let Some(drop) = self.review.as_ref().and_then(|r| r.drop.as_ref()) {
+            drop.settle();
+        }
     }
 
     pub(super) fn results(&mut self) -> Option<&mut Results> {

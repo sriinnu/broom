@@ -699,6 +699,7 @@ impl Panel {
             let (pill, color) = match group.safety {
                 Safety::Safe => ("safe", colors().safe),
                 Safety::Review => ("review", colors().review),
+                Safety::Manage => ("its tool", colors().muted),
             };
             // "node_modules · 2.1 GB in 14 places" → name, then the numbers muted.
             let (name, places) = group.label.split_once(" · ").map(|(a, b)| (a.to_string(), b.to_string())).unwrap_or((group.label.to_string(), String::new()));
@@ -775,13 +776,16 @@ impl Panel {
                             .child(
                                 div()
                                     .id(("reveal", ix))
-                                    .text_xs()
+                                    .size(px(20.))
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
                                     .text_color(rgb(colors().muted))
-                                    .px_1()
                                     .rounded(theme::radius(6.))
                                     .cursor_pointer()
                                     .hover(|s| s.text_color(rgb(colors().text)).bg(rgb(colors().border)))
-                                    .child("⌕")
+                                    .child(crate::app::icons::inline_symbol(crate::app::icons::Symbol::Magnifier, 12.))
                                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                                     .on_click(cx.listener(move |_, _, _, cx| {
                                         cx.stop_propagation();

@@ -29,7 +29,7 @@ impl Broom {
         .detach();
     }
 
-    /// "Review & move to Trash": open the review card over the staged list.
+    /// "Review and Move to Trash…": open the review card over the staged list.
     pub(super) fn open_review(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.modal.is_some() {
             return;
@@ -135,7 +135,7 @@ impl Broom {
                         );
                         if let Some(r) = this.results() {
                             r.last_trashed = landed;
-                            r.freed = Some(Freed { bytes: freed, items: items.len(), milestone });
+                            r.freed = Some(Freed { bytes: freed, items: items.len(), milestone, emptied: None });
                             r.dust = (!specks.is_empty() && !delight::reduce_motion())
                                 .then(|| Rc::new(delight::Puff { start: clock::now(), specks }));
                         }
@@ -168,6 +168,36 @@ impl Broom {
             }
         }
         self.collector_changed(cx);
+        cx.notify();
+    }
+
+    /// "Never Offer This" / "Offer This Again": add `path` to the protect
+    /// list (Settings › Protected) or take it off. Adding applies at once;
+    /// taking off re-reads the disk, since what was held back has to be found
+    /// again to be offered.
+    pub(super) fn set_protected(&mut self, path: PathBuf, on: bool, cx: &mut Context<Self>) {
+        let line = abbreviate_home(&path.to_string_lossy());
+        let shown = line.clone();
+        if on {
+            if !self.settings.protected.contains(&line) {
+                self.settings.protected.push(line);
+            }
+        } else {
+            let home = home_dir();
+            self.settings.protected.retain(|p| {
+                let expanded = p.strip_prefix("~/").map(|rest| home.join(rest)).unwrap_or_else(|| PathBuf::from(p));
+                expanded != path
+            });
+        }
+        let _ = settings::save(&self.settings);
+        self.apply_protection();
+        self.collector_changed(cx);
+        if on {
+            self.show_banner(Some(format!("Protected {shown}\nBroom won't offer it or move it to the Trash. Settings › Protected lists it.")), cx);
+        } else {
+            self.show_banner(Some(format!("{shown} can be offered again\nReading the disk again to see what it holds…")), cx);
+            self.refresh_in_place(cx);
+        }
         cx.notify();
     }
 
@@ -207,7 +237,9 @@ impl Broom {
         match &self.screen {
             Screen::Results(r) => col.child(self.render_findings(&r.findings, Some(r), cx)).child(self.render_plan(r, cx)),
             Screen::Scanning(s) => {
-                let early = findings::early_findings(&s.progress.early_findings.lock().unwrap());
+                let mut early = findings::early_findings(&s.progress.early_findings.lock().unwrap());
+                let protected = self.settings.protect_paths();
+                early.retain(|f| f.path.as_ref().is_none_or(|p| crate::protect::blocking(p, &protected).is_none()));
                 col.child(self.render_findings(&early, None, cx))
                     .child(plan_placeholder("The plan opens when the scan finishes."))
             }
@@ -222,20 +254,28 @@ impl Broom {
     /// opens its folder on click; "Stage all safe" ticks every safe one.
     pub(super) fn render_findings(&self, findings: &[Finding], results: Option<&Results>, cx: &mut Context<Self>) -> impl IntoElement {
         let safe: u64 = findings.iter().filter(|f| f.safety == Safety::Safe).map(|f| f.size).sum();
-        let safe_nodes: Vec<usize> = findings.iter().filter(|f| f.safety == Safety::Safe).flat_map(|f| f.nodes.iter().copied()).collect();
+        let safe_nodes: Vec<usize> = findings.iter().filter(|f| f.safety == Safety::Safe).flat_map(|f| tickable(f, results)).collect();
         let all_safe_staged = results.is_some_and(|r| !safe_nodes.is_empty() && r.group_tick(&safe_nodes) == Tick::On);
         let mut list = div().id("findings").max_h(px(290.)).overflow_y_scroll().flex().flex_col().gap_0p5().px_1p5();
         for (i, finding) in findings.iter().enumerate() {
             let (tag, color) = match finding.safety {
                 Safety::Safe => ("Safe to delete", colors().safe),
                 Safety::Review => ("Review first", colors().review),
+                Safety::Manage => ("Use its tool", colors().muted),
             };
             let target = finding.nodes.first().copied().filter(|_| finding.path.is_some());
-            let nodes = finding.nodes.clone();
+            // What the finding's checkbox stages: for a project finding, the
+            // folders not built this week (`tickable`).
+            let nodes = tickable(finding, results);
+            let project = findings::PROJECT_FINDINGS.contains(&finding.title) && results.is_some();
+            let recent = results.map_or(0, |r| finding.nodes.iter().filter(|ix| r.recent.contains_key(ix)).count());
+            let unfolded = results.is_some_and(|r| r.unfolded.contains(finding.title));
+            let title = finding.title;
             let in_view = results.is_some_and(|r| {
                 r.focus != Tree::ROOT && finding.nodes.iter().any(|&n| r.tree.is_ancestor_or_self(r.focus, n))
             });
-            let tick = results.map(|r| r.group_tick(&finding.nodes));
+            // A Manage finding is explained, never staged: no checkbox.
+            let tick = results.filter(|_| finding.safety != Safety::Manage).map(|r| r.group_tick(&nodes));
             list = list.child(
                 div()
                     .id(("finding", i))
@@ -306,7 +346,50 @@ impl Broom {
                                     .child(div().flex_none().text_color(rgb(color)).child(tag))
                                     .child(div().flex_none().text_color(rgb(colors().muted)).child("·"))
                                     .child(div().min_w_0().text_color(rgb(colors().muted)).truncate().child(finding.blurb.clone())),
-                            ),
+                            )
+                            // Project findings: say what the tick leaves out, and
+                            // unfold to every folder, each with its own tick.
+                            .when(project && recent > 0, |d| {
+                                d.child(div().text_xs().text_color(rgb(colors().review)).child(format!(
+                                    "{recent} changed this week, left unticked"
+                                )))
+                            })
+                            .when(project && finding.nodes.len() > 1, |d| {
+                                let n = finding.nodes.len();
+                                d.child(
+                                    div()
+                                        .id(("unfold", i))
+                                        .text_xs()
+                                        .text_color(rgb(colors().accent))
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            if let Some(r) = this.results() {
+                                                if !r.unfolded.remove(title) {
+                                                    r.unfolded.insert(title);
+                                                }
+                                                cx.notify();
+                                            }
+                                        }))
+                                        .child(if unfolded { "Hide the list".to_string() } else { format!("Show all {n} ›") }),
+                                )
+                            })
+                            .when_some(results.filter(|_| unfolded), |d, r| d.child(self.render_project_rows(finding, r, cx)))
+                            // Duplicates have a second way out that deletes nothing.
+                            .when(finding.title == DUPLICATES && results.is_some_and(|r| !r.dupe_pairs.is_empty()), |d| {
+                                d.child(
+                                    div().pt_1().child(
+                                        button(("merge-clones", i), "Merge as Clones…")
+                                            .text_xs()
+                                            .py_0p5()
+                                            .px_2()
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                cx.stop_propagation();
+                                                this.open_merge(window, cx);
+                                            })),
+                                    ),
+                                )
+                            }),
                     ),
             );
         }
@@ -349,6 +432,78 @@ impl Broom {
                     }),
             )
             .child(list)
+            // Said, not hidden: what the protect list kept off the findings.
+            .when_some(results.filter(|r| !r.not_offered.is_empty()), |d, r| {
+                let names: Vec<String> = r.not_offered.iter().map(|p| abbreviate_home(&p.to_string_lossy())).collect();
+                let n = names.len();
+                let shown = names.iter().take(2).cloned().collect::<Vec<_>>().join(", ");
+                let more = if n > 2 { format!(" and {} more", n - 2) } else { String::new() };
+                let all = names.join("\n");
+                d.child(
+                    path_tip(div().id("not-offered"), all)
+                        .px_3()
+                        .pt_1()
+                        .text_xs()
+                        .text_color(rgb(colors().muted))
+                        .truncate()
+                        .child(format!("Not offered, protected: {shown}{more}")),
+                )
+            })
+    }
+
+    /// A project finding unfolded: every folder, biggest first, with its
+    /// own checkbox, the project it belongs to, and when it last changed if
+    /// that was this week (a build or an install, most likely).
+    fn render_project_rows(&self, finding: &Finding, r: &Results, cx: &mut Context<Self>) -> impl IntoElement {
+        const ROWS: usize = 60;
+        let mut nodes = finding.nodes.clone();
+        nodes.sort_by(|a, b| r.tree.nodes[*b].size.cmp(&r.tree.nodes[*a].size));
+        let more = nodes.len().saturating_sub(ROWS);
+        let mut list = div().pt_1().flex().flex_col();
+        for &ix in nodes.iter().take(ROWS) {
+            let node = &r.tree.nodes[ix];
+            let project = node.parent.map(|p| r.tree.nodes[p].name.to_string()).unwrap_or_default();
+            let full = abbreviate_home(&r.tree.path_of(ix).to_string_lossy());
+            let built = r.recent.get(&ix).map(|t| match format_age(*t).as_str() {
+                "now" => "changed just now".to_string(),
+                age => format!("changed {age} ago"),
+            });
+            list = list.child(
+                div()
+                    .id(("project-row", ix))
+                    .flex()
+                    .items_center()
+                    .gap_1p5()
+                    .py_0p5()
+                    .text_xs()
+                    .child(checkbox(("project-tick", ix), r.tick(ix), r.stageable(ix)).on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.click_tick(ix, cx);
+                    })))
+                    .child(
+                        path_tip(div().id(("project-name", ix)), full)
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .cursor_pointer()
+                            .hover(|s| s.text_color(rgb(colors().accent)))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                if let Some(r) = this.results() {
+                                    r.navigate(ix);
+                                    cx.notify();
+                                }
+                            }))
+                            .child(format!("{project}/{}", node.name)),
+                    )
+                    .when_some(built, |d, built| d.child(div().flex_none().text_color(rgb(colors().review)).child(built)))
+                    .child(div().flex_none().font_family(theme::current().mono).text_color(rgb(colors().muted)).child(format_size(node.size))),
+            );
+        }
+        if more > 0 {
+            list = list.child(div().text_xs().text_color(rgb(colors().muted)).child(format!("and {} more, smaller", format_count(more as u64))));
+        }
+        list
     }
 
     /// The cleanup plan: one line per staged item, the totals, and the way to the
@@ -508,7 +663,7 @@ impl Broom {
             )
             .child(
                 div().flex_none().p_3().child(
-                    primary_button("trash", "Review & move to Trash", colors().danger)
+                    primary_button("trash", "Review and Move to Trash…", colors().danger)
                         .w_full()
                         .text_center()
                         .when(empty, |b| b.opacity(0.45).cursor_default())
@@ -651,4 +806,12 @@ impl Broom {
 /// keyboard path stays silent, as macOS's own controls do.
 fn stage_tap(cx: &App) {
     cx.play_haptic_feedback(HapticFeedbackStyle::Alignment);
+}
+
+/// What a finding's checkbox stages. A project finding leaves out folders
+/// built this week, unless that's all of them; anything else is all of it.
+fn tickable(finding: &Finding, results: Option<&Results>) -> Vec<usize> {
+    let Some(r) = results.filter(|_| findings::PROJECT_FINDINGS.contains(&finding.title)) else { return finding.nodes.clone() };
+    let older: Vec<usize> = finding.nodes.iter().copied().filter(|ix| !r.recent.contains_key(ix)).collect();
+    if older.is_empty() { finding.nodes.clone() } else { older }
 }
