@@ -485,7 +485,7 @@ fn render_freed_banner(r: &Results, freed: &Freed, still: bool, cx: &mut Context
             )
             .when(!r.last_trashed.is_empty(), |d| {
                 d.child(
-                    button("put-back", "Put back")
+                    button("put-back", "Put Back")
                         .flex_none()
                         .text_xs()
                         .py_0p5()
