@@ -89,6 +89,10 @@ pub(super) struct Results {
     /// When the banner is a move to the Trash: what it freed, for the count-up
     /// and the comparison. Cleared by any other banner.
     pub(super) freed: Option<Freed>,
+    /// Each duplicate the "Duplicate files" finding lists, with the copy it
+    /// duplicates: what Merge as Clones needs. Paths, so a tree change can't
+    /// point them at the wrong node.
+    pub(super) dupe_pairs: Vec<duplicates::Pair>,
     /// Dust drifting off where the trashed slices were, for a moment.
     pub(super) dust: Option<Rc<delight::Puff>>,
     pub(super) color_by: ColorBy,
@@ -139,6 +143,8 @@ pub(super) struct Freed {
     pub(super) items: usize,
     /// The lifetime milestone this cleanup carried the tally past, if any.
     pub(super) milestone: Option<u64>,
+    /// Set when this was Empty Trash rather than a move to it.
+    pub(super) emptied: Option<EmptiedNote>,
 }
 
 impl Results {
@@ -261,6 +267,7 @@ impl Results {
             banner_version: 0,
             last_trashed: Vec::new(),
             freed: None,
+            dupe_pairs: Vec::new(),
             dust: None,
             color_by,
             categories: HashMap::new(),

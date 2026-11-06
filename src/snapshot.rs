@@ -195,6 +195,34 @@ pub fn install(window: &mut Window, cx: &mut Context<Broom>) {
                     })
                     .ok();
                 }
+                // `merge` / `merge-confirm`: open Merge as Clones on the
+                // Duplicate files finding, and press its Merge button.
+                "merge" => {
+                    cx.update(|window, cx| {
+                        if let Some(broom) = crate::app::broom() {
+                            broom.update(cx, |b, cx| b.demo_open_merge(window, cx));
+                        }
+                    })
+                    .ok();
+                }
+                "merge-confirm" => {
+                    cx.update(|_, cx| {
+                        if let Some(broom) = crate::app::broom() {
+                            broom.update(cx, |b, cx| b.demo_confirm_merge(cx));
+                        }
+                    })
+                    .ok();
+                }
+                // `empty-confirm`: press Empty Trash on the open card. Only the
+                // (fake) home Trash is emptied in snapshot builds.
+                "empty-confirm" => {
+                    cx.update(|_, cx| {
+                        if let Some(broom) = crate::app::broom() {
+                            broom.update(cx, |b, cx| b.demo_confirm_empty_trash(cx));
+                        }
+                    })
+                    .ok();
+                }
                 // `about`: open the About card (the settings panel's About tab).
                 "about" => {
                     cx.update(|window, cx| {

@@ -6,6 +6,8 @@ mod api_keys;
 mod broom;
 mod chart;
 mod cleanup;
+mod empty_trash;
+mod merge_clones;
 pub(crate) mod icons;
 mod lifecycle;
 mod live_view;
@@ -84,11 +86,14 @@ actions!(broom, [
     OpenSettings, CloseSettings, About, CloseAbout,
     SelectNext, SelectPrev, OpenSelected, ToggleStaged, CloseReview, CopyPath, CopyRelativePath,
     SortBySize, SortByName, SortByModified,
-    GoBack, GoForward, ToggleRail, ToggleCleanup, SelectAll, FullRescan
+    GoBack, GoForward, ToggleRail, ToggleCleanup, SelectAll, FullRescan,
+    EmptyTrash, CloseEmptyTrash, CloseMerge
 ]);
 
 pub use self::broom::*;
 use self::chart::*;
+use self::empty_trash::*;
+use self::merge_clones::*;
 pub use self::lifecycle::*;
 pub use self::menus::*;
 use self::modals::*;

@@ -135,7 +135,7 @@ impl Broom {
                         );
                         if let Some(r) = this.results() {
                             r.last_trashed = landed;
-                            r.freed = Some(Freed { bytes: freed, items: items.len(), milestone });
+                            r.freed = Some(Freed { bytes: freed, items: items.len(), milestone, emptied: None });
                             r.dust = (!specks.is_empty() && !delight::reduce_motion())
                                 .then(|| Rc::new(delight::Puff { start: clock::now(), specks }));
                         }
@@ -306,7 +306,22 @@ impl Broom {
                                     .child(div().flex_none().text_color(rgb(color)).child(tag))
                                     .child(div().flex_none().text_color(rgb(colors().muted)).child("·"))
                                     .child(div().min_w_0().text_color(rgb(colors().muted)).truncate().child(finding.blurb.clone())),
-                            ),
+                            )
+                            // Duplicates have a second way out that deletes nothing.
+                            .when(finding.title == DUPLICATES && results.is_some_and(|r| !r.dupe_pairs.is_empty()), |d| {
+                                d.child(
+                                    div().pt_1().child(
+                                        button(("merge-clones", i), "Merge as Clones…")
+                                            .text_xs()
+                                            .py_0p5()
+                                            .px_2()
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                cx.stop_propagation();
+                                                this.open_merge(window, cx);
+                                            })),
+                                    ),
+                                )
+                            }),
                     ),
             );
         }

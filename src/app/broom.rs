@@ -20,6 +20,10 @@ pub struct Broom {
     pub(super) fitted: [f32; 3],
     /// The review card before a move to the Trash, if open.
     pub(super) review: Option<ReviewState>,
+    /// The Empty Trash card, if open.
+    pub(super) empty_trash: Option<EmptyTrashState>,
+    /// The Merge as Clones card, if open.
+    pub(super) merge: Option<MergeState>,
     pub(super) focus_handle: FocusHandle,
     pub(super) error: Option<String>,
     pub(super) access: Access,
@@ -116,6 +120,9 @@ impl Render for Broom {
             .on_action(cx.listener(Self::open_selected))
             .on_action(cx.listener(Self::toggle_selected))
             .on_action(cx.listener(Self::close_review))
+            .on_action(cx.listener(Self::open_empty_trash))
+            .on_action(cx.listener(Self::close_empty_trash))
+            .on_action(cx.listener(Self::close_merge))
             .on_action(cx.listener(Self::copy_path))
             .on_action(cx.listener(Self::copy_relative_path))
             .on_action(cx.listener(|this, _: &SortBySize, _, cx| this.choose_sort(SortBy::Size, cx)))
@@ -189,6 +196,8 @@ impl Broom {
             pane_drag: Rc::default(),
             fitted: [settings.rail_width, settings.navigator_width, settings.cleanup_width],
             review: None,
+            empty_trash: None,
+            merge: None,
             focus_handle,
             error: None,
             access,

@@ -651,7 +651,7 @@ impl Broom {
     pub(super) fn find_duplicates(&mut self, tree: Arc<Tree>, scan_id: u64, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             let found = cx.background_spawn(async move { survey_pool().install(|| duplicates::find(&tree)) }).await;
-            let Some(finding) = found else { return };
+            let Some((finding, pairs)) = found else { return };
             let _ = this.update(cx, |this, cx| {
                 if let Some(r) = this.results().filter(|r| r.scan_id == scan_id) {
                     // Only what's still in the tree: a move to the Trash may have
@@ -659,6 +659,7 @@ impl Broom {
                     let mut finding = finding;
                     finding.nodes.retain(|&ix| r.tree.nodes[ix].parent.is_some());
                     if !finding.nodes.is_empty() {
+                        r.dupe_pairs = pairs;
                         r.findings.push(finding);
                         r.findings.sort_by(|a, b| b.size.cmp(&a.size));
                         cx.notify();

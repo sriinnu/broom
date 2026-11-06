@@ -76,6 +76,14 @@ impl Broom {
     /// The backdrop was clicked: whichever card is up goes away (a review that
     /// is mid-delete stays until it's done).
     pub(super) fn close_any_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.empty_trash.is_some() {
+            self.close_empty_trash(&CloseEmptyTrash, window, cx);
+            return;
+        }
+        if self.merge.is_some() {
+            self.close_merge(&CloseMerge, window, cx);
+            return;
+        }
         if let Some(review) = &self.review {
             if review.working {
                 return;
@@ -93,6 +101,10 @@ impl Broom {
     pub(super) fn render_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (context, card) = match (&self.review, &self.modal) {
             (Some(review), _) => ("Review", self.render_review(review, cx).into_any_element()),
+            (None, _) if self.empty_trash.is_some() => {
+                ("EmptyTrash", self.render_empty_trash(self.empty_trash.as_ref().expect("checked"), cx))
+            }
+            (None, _) if self.merge.is_some() => ("Merge", self.render_merge(self.merge.as_ref().expect("checked"), cx)),
             (None, Some(p)) => (
                 match p.tab {
                     PanelTab::Help => "Panel",

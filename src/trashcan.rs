@@ -106,6 +106,160 @@ pub fn put_back(landed: &[(PathBuf, PathBuf)]) -> Vec<PathBuf> {
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// Emptying the Trash
+// ---------------------------------------------------------------------------
+
+/// Every Trash that Finder's Empty Trash would empty: the home one, and the
+/// `.Trashes/<uid>` folder on each other mounted volume (what was trashed
+/// from there went there). Only the ones that exist.
+pub fn trash_dirs(home: &Path, volumes: &[PathBuf]) -> Vec<PathBuf> {
+    let uid = unsafe { libc::getuid() };
+    std::iter::once(home.join(".Trash"))
+        .chain(volumes.iter().map(|v| v.join(".Trashes").join(uid.to_string())))
+        .filter(|d| d.is_dir())
+        .collect()
+}
+
+/// What's in the Trash: top-level items, and the bytes they take on disk
+/// (allocated blocks, a hard-linked file once), which is what emptying frees
+/// barring clones shared with files outside the Trash.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Contents {
+    pub items: usize,
+    pub bytes: u64,
+}
+
+/// Why the Trash couldn't be read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Unreadable {
+    /// macOS keeps the Trash behind Full Disk Access.
+    NoAccess,
+    Other(String),
+}
+
+fn entries(dir: &Path) -> Result<Vec<PathBuf>, Unreadable> {
+    match std::fs::read_dir(dir) {
+        Ok(read) => Ok(read.filter_map(|e| e.ok().map(|e| e.path())).collect()),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied || e.raw_os_error() == Some(libc::EPERM) => Err(Unreadable::NoAccess),
+        Err(e) => Err(Unreadable::Other(format!("{}: {e}", dir.display()))),
+    }
+}
+
+/// The first folder is the home Trash: if that can't be read, nothing can be
+/// said. Another volume's Trash that can't be read is passed over, so it
+/// never stops the rest half way.
+fn listing(i: usize, dir: &Path) -> Result<Vec<PathBuf>, Unreadable> {
+    match entries(dir) {
+        Err(e) if i == 0 => Err(e),
+        Err(_) => Ok(Vec::new()),
+        ok => ok,
+    }
+}
+
+/// Bytes on disk under `path`, not following links; inodes already seen
+/// (hard links) count once.
+fn allocated(path: &Path, seen: &mut std::collections::HashSet<(u64, u64)>) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(meta) = path.symlink_metadata() else { return 0 };
+    if meta.nlink() > 1 && !meta.is_dir() && !seen.insert((meta.dev(), meta.ino())) {
+        return 0;
+    }
+    let mut bytes = meta.blocks() * 512;
+    if meta.is_dir() {
+        if let Ok(read) = std::fs::read_dir(path) {
+            for entry in read.flatten() {
+                bytes += allocated(&entry.path(), seen);
+            }
+        }
+    }
+    bytes
+}
+
+/// Count what's in these Trash folders. `.DS_Store` is Finder's, not the user's.
+pub fn measure(dirs: &[PathBuf]) -> Result<Contents, Unreadable> {
+    let mut seen = std::collections::HashSet::new();
+    let mut contents = Contents::default();
+    for (i, dir) in dirs.iter().enumerate() {
+        for path in listing(i, dir)? {
+            let bytes = allocated(&path, &mut seen);
+            if path.file_name().is_some_and(|n| n == ".DS_Store") {
+                continue;
+            }
+            contents.items += 1;
+            contents.bytes += bytes;
+        }
+    }
+    Ok(contents)
+}
+
+/// What emptying did.
+#[derive(Clone, Debug, Default)]
+pub struct Emptied {
+    /// What went, counted as `measure` counts.
+    pub gone: Contents,
+    /// Top-level items that stayed (locked, in use, no permission), by name.
+    pub stuck: Vec<String>,
+}
+
+/// Delete everything in these Trash folders, for good. Each top-level item is
+/// measured, then removed; one that won't go (a locked file, say: Finder
+/// would ask about those) stays, whole or in part, and is reported. Partly
+/// removed folders count only the part that went.
+pub fn empty(dirs: &[PathBuf]) -> Result<Emptied, Unreadable> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Emptied::default();
+    for (i, dir) in dirs.iter().enumerate() {
+        for path in listing(i, dir)? {
+            let user = path.file_name().is_none_or(|n| n != ".DS_Store");
+            let before = allocated(&path, &mut seen);
+            let is_dir = path.symlink_metadata().is_ok_and(|m| m.is_dir());
+            let result = if is_dir { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };
+            if !user {
+                continue;
+            }
+            match result {
+                Ok(()) => {
+                    out.gone.items += 1;
+                    out.gone.bytes += before;
+                }
+                Err(_) => {
+                    // What's left of it is what didn't go; measure it fresh.
+                    let left = allocated(&path, &mut std::collections::HashSet::new());
+                    out.gone.bytes += before.saturating_sub(left);
+                    out.stuck.push(path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Without Full Disk Access Broom can't see into the Trash, but Finder can
+/// empty it. macOS asks once whether Broom may tell Finder to.
+pub fn empty_with_finder() -> Result<(), String> {
+    let output = std::process::Command::new("/usr/bin/osascript")
+        .args(["-e", "tell application \"Finder\" to empty trash"])
+        .output()
+        .map_err(|e| format!("couldn't ask Finder: {e}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+/// Free bytes on the volume holding each path, deduplicated by volume.
+pub fn free_space(paths: &[PathBuf]) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    let mut devices = std::collections::HashSet::new();
+    paths
+        .iter()
+        .filter(|p| p.metadata().is_ok_and(|m| devices.insert(m.dev())))
+        .filter_map(|p| crate::scan::statvfs(p).map(|(_, free)| free))
+        .sum()
+}
+
 const INK: u32 = 0x1d1a17;
 const CREAM: u32 = 0xf3ead8;
 const CAN: u32 = 0x5a6b7a;
@@ -633,6 +787,72 @@ fn paint(window: &mut Window, bounds: Bounds<Pixels>, drop: &Drop) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("broom-empty-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn measures_items_once_and_skips_finders_ds_store() {
+        let trash = temp("measure");
+        std::fs::write(trash.join("a.bin"), vec![1u8; 100_000]).unwrap();
+        std::fs::create_dir_all(trash.join("folder/inner")).unwrap();
+        std::fs::write(trash.join("folder/inner/b.bin"), vec![2u8; 50_000]).unwrap();
+        // A hard link to a.bin inside the folder: its blocks are counted once.
+        std::fs::hard_link(trash.join("a.bin"), trash.join("folder/link.bin")).unwrap();
+        std::fs::write(trash.join(".DS_Store"), vec![0u8; 6_000]).unwrap();
+        let contents = measure(std::slice::from_ref(&trash)).unwrap();
+        assert_eq!(contents.items, 2);
+        assert!(contents.bytes >= 150_000 && contents.bytes < 220_000, "{}", contents.bytes);
+        std::fs::remove_dir_all(&trash).ok();
+    }
+
+    #[test]
+    fn empties_everything_and_reports_what_stayed() {
+        let trash = temp("empty");
+        std::fs::write(trash.join("a.bin"), vec![1u8; 40_000]).unwrap();
+        std::fs::create_dir_all(trash.join("folder")).unwrap();
+        std::fs::write(trash.join("folder/b.bin"), vec![2u8; 40_000]).unwrap();
+        std::fs::write(trash.join("folder/locked.bin"), vec![3u8; 40_000]).unwrap();
+        std::fs::write(trash.join(".DS_Store"), b"x").unwrap();
+        // Lock one file, as Finder's Get Info "Locked" does.
+        let locked = std::ffi::CString::new(trash.join("folder/locked.bin").to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::chflags(locked.as_ptr(), libc::UF_IMMUTABLE as _) }, 0);
+        let before = measure(std::slice::from_ref(&trash)).unwrap();
+        let emptied = empty(std::slice::from_ref(&trash)).unwrap();
+        assert_eq!(emptied.gone.items, 1, "a.bin went whole");
+        assert_eq!(emptied.stuck, vec!["folder".to_string()]);
+        assert!(!trash.join("a.bin").exists() && !trash.join(".DS_Store").exists());
+        assert!(!trash.join("folder/b.bin").exists(), "the rest of the folder went");
+        assert!(trash.join("folder/locked.bin").exists());
+        assert!(emptied.gone.bytes >= 80_000 && emptied.gone.bytes < before.bytes);
+        assert_eq!(unsafe { libc::chflags(locked.as_ptr(), 0) }, 0);
+        std::fs::remove_dir_all(&trash).ok();
+    }
+
+    #[test]
+    fn an_unreadable_trash_says_so() {
+        let missing = temp("missing").join("nope");
+        assert!(matches!(measure(&[missing]), Err(Unreadable::Other(_))));
+    }
+
+    #[test]
+    fn trash_dirs_lists_the_ones_that_exist() {
+        let home = temp("home");
+        std::fs::create_dir_all(home.join(".Trash")).unwrap();
+        let vol = temp("vol");
+        let uid = unsafe { libc::getuid() };
+        std::fs::create_dir_all(vol.join(".Trashes").join(uid.to_string())).unwrap();
+        let bare = temp("bare");
+        let dirs = trash_dirs(&home, &[vol.clone(), bare.clone()]);
+        assert_eq!(dirs, vec![home.join(".Trash"), vol.join(".Trashes").join(uid.to_string())]);
+        for d in [home, vol, bare] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
 
     fn items(n: usize) -> Vec<Item> {
         (0..n).map(|i| Item { kind: if i % 2 == 0 { Kind::Dir } else { Kind::File }, weight: 0.6 + 0.4 * (i % 3) as f32 / 2.0 }).collect()

@@ -31,6 +31,8 @@ pub fn app_menus(rail_hidden: bool, cleanup_hidden: bool) -> Vec<Menu> {
             MenuItem::action("Rescan", Rescan),
             MenuItem::action("Full Rescan", FullRescan),
             MenuItem::separator(),
+            MenuItem::action("Empty Trash…", EmptyTrash),
+            MenuItem::separator(),
             MenuItem::action("Close Window", CloseWindow),
             MenuItem::separator(),
             MenuItem::action("Clear Scan", StartOver),

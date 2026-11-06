@@ -15,6 +15,8 @@ pub(super) fn render_help() -> impl IntoElement {
         ("What about iCloud, Google Drive, OneDrive?", "They're synced folders on this Mac, listed under Cloud storage. Broom measures what's downloaded here; “cloud-only” items use no space and are counted as such."),
         ("And the rings?", "Each ring is one level of folders, biggest at twelve o'clock going clockwise. The centre takes you up one level, a slice zooms in, and the list mirrors the chart when it's sorted by size."),
         ("What grew? Duplicates?", "Each scan is remembered (folder sizes only, kept a week), so the next scan of the same place shows what grew: +1.2 GB in amber, shrinkage in green. Duplicate files appear as a finding once the scan is done: identical copies, compared byte for byte, of your own files only. APFS clones and hard links are left out, since deleting them frees nothing."),
+        ("When does the space come back?", "When the Trash is emptied. File › Empty Trash… (⇧⌘⌫), or the button on the banner after a cleanup, empties it from Broom: it says what's there first, and that this can't be undone, then shows how much the disk actually got back. Locked items stay in the Trash."),
+        ("Merge as Clones?", "The Duplicate files finding can merge instead of delete: each extra copy becomes an APFS clone of the one that stays. Both files stay where they were, with their own names, dates and tags, but the bytes are stored once, so the space comes back with nothing deleted. Edit one later and only the changes take new space."),
         ("Getting around", "Sort the list by Size, Name or Modified; click the same one again to flip it. Drag a column's edge to resize it, double-click to reset. ⇧-click takes a range of rows, ⌘- or ⌃-click adds or removes one and ⌘A takes them all; space and ⌘C then act on all of them, and esc lets go. Settings can add date modified and date created to the list. ⌘[ and ⌘] step back and forward through the folders you've visited, ⌥⌘S hides the sidebar. ⌘C copies the selected row's path (or the open folder's), and hovering a path that's cut short shows all of it. A folder's date is when something directly inside it was added or removed, as in Finder."),
     ];
     div()
@@ -436,10 +438,11 @@ fn render_freed_banner(r: &Results, freed: &Freed, still: bool, cx: &mut Context
     // Only the digits are monospaced; the unit reads with the sentence.
     let counter = delight::format_like(shown, freed.bytes);
     let (number, unit) = counter.rsplit_once(' ').map(|(n, u)| (n.to_string(), u.to_string())).unwrap_or((counter.clone(), String::new()));
-    let what = if freed.items == 1 { "1 item".to_string() } else { format!("{} items", format_count(freed.items as u64)) };
-    let detail = match delight::comparison(freed.bytes) {
-        Some(like) => format!("{what}, {like}. Empty the Trash to get the space back."),
-        None => format!("{what}. Empty the Trash to get the space back."),
+    let what = items_phrase(freed.items);
+    let like = delight::comparison(freed.bytes).map(|like| format!(", {like}")).unwrap_or_default();
+    let (lead, tail, detail) = match freed.emptied {
+        Some(note) => ("Emptied", format!("{unit} from the Trash"), format!("{what}{like}. {}", emptied_detail(freed.bytes, note))),
+        None => ("Swept", format!("{unit} into the Trash"), format!("{what}{like}. Empty the Trash to get the space back.")),
     };
     div().absolute().top_4().left_0().right_0().px_4().flex().justify_center().child(
         div()
@@ -472,11 +475,11 @@ fn render_freed_banner(r: &Results, freed: &Freed, still: bool, cx: &mut Context
                             .items_baseline()
                             .gap_1()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("Swept")
+                            .child(lead)
                             // Monospaced and padded to its final width, so the
                             // banner doesn't jiggle while the number climbs.
                             .child(div().flex_none().font_family(theme::current().mono).child(number))
-                            .child(format!("{unit} into the Trash")),
+                            .child(tail),
                     )
                     .child(div().text_xs().text_color(rgb(colors().muted)).child(detail))
                     .when_some(freed.milestone, |d, m| {
@@ -493,6 +496,19 @@ fn render_freed_banner(r: &Results, freed: &Freed, still: bool, cx: &mut Context
                         .on_click(cx.listener(|this, _, _, cx| {
                             cx.stop_propagation();
                             this.put_back(cx);
+                        })),
+                )
+            })
+            .when(freed.emptied.is_none(), |d| {
+                d.child(
+                    button("banner-empty-trash", "Empty Trash…")
+                        .flex_none()
+                        .text_xs()
+                        .py_0p5()
+                        .px_2()
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.open_empty_trash(&EmptyTrash, window, cx);
                         })),
                 )
             })
