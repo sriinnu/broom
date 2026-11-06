@@ -9,7 +9,13 @@
 //!
 //! Same scanner, same ask engine, same safety rules as the window: nothing is
 //! deleted outright, only moved to the Trash, and `clean` without `--yes` is a
-//! dry run. `--json` prints one object on stdout for a program to read; without
+//! dry run.
+//!
+//! This is the surface agents drive, so the line is hard: the worst any call
+//! here can do is put something in the Trash, where a person can take it back.
+//! Emptying the Trash, deleting for good and rewriting files (Merge as
+//! Clones) belong to the window, behind a person's click on a confirm card.
+//! `agents_can_only_move_to_the_trash` below fails the build if that slips. `--json` prints one object on stdout for a program to read; without
 //! it the output is for a person. Exit codes: 0 done, 1 something failed,
 //! 2 usage. Progress goes to stderr, never stdout.
 
@@ -587,5 +593,26 @@ mod tests {
         assert_eq!(run(&["broom".into(), "find".into()]), Some(2));
         assert_eq!(run(&["broom".into(), "trash".into()]), Some(2));
         assert_eq!(run(&["broom".into(), "scan".into(), "a".into(), "b".into()]), Some(2));
+    }
+
+    /// The CLI (what scripts and agents run) must never reach anything that
+    /// deletes for good or rewrites files: only `trashcan::send`, the move to
+    /// the Trash. Reads this file's own code, above the tests.
+    #[test]
+    fn agents_can_only_move_to_the_trash() {
+        let code = include_str!("cli.rs");
+        let code = &code[..code.find("#[cfg(test)]").expect("tests marker")];
+        assert_eq!(forbidden_in(code), Vec::<&str>::new());
+        // And the check really bites: a planted call is caught.
+        assert_eq!(forbidden_in("fn x() { std::fs::remove_dir_all(p); }"), vec!["remove_dir"]);
+        assert_eq!(forbidden_in("crate::trashcan::empty(&dirs)"), vec!["trashcan::empty"]);
+    }
+
+    fn forbidden_in(code: &str) -> Vec<&'static str> {
+        const FORBIDDEN: &[&str] = &[
+            "remove_file", "remove_dir", "unlink", "rmdir", "Command::new",
+            "trashcan::empty", "empty_with_finder", "duplicates::merge", "clonefile", "rename(",
+        ];
+        FORBIDDEN.iter().copied().filter(|f| code.contains(f)).collect()
     }
 }
