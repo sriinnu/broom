@@ -40,66 +40,42 @@ for the usual space hogs, and a cleanup plan you stage with checkboxes before an
 
 ## What it does
 
-- **Search and clean from the menu bar.** The 🧹 panel takes a line of text, in English or in the
-  Telugu you'd type on a phone (*node modules anni teesey*), and answers with groups: a finding from
-  the catalog, every folder with that name, a file extension, git worktrees, or a name pattern. Each
-  group expands to its folders with sizes and a reveal-in-Finder button.
-- **Safe or review, with a reason.** `node_modules` next to a `package.json` is safe; a `dist` folder
-  is "review" because not every `dist` is build output. Broom says why in one line and never
-  pre-ticks a group it only matched by name.
-- **Real savings.** On APFS, deleting a cloned or hard-linked file may free nothing. The number next
-  to **Move to Trash** counts clones and hard links once, and is tested against real deletions on a
-  throwaway APFS volume.
-- **A reader, optionally.** With a [Jev](https://typesafe.ai) key, each group gets a yes/no from the
-  classifier before it is offered as "safe"; with a chat-model key, free-form questions get a
-  second opinion on what you meant. Both are off without keys, and Broom works fully without them.
-  The model sees folder names and your question, never full paths.
-- **Live from the first second.** The chart appears straight away and fills in as Broom reads.
-  Folders turn from muted to full colour the moment their total is final, and you can click into
-  them before the scan finishes.
-- **Fast and exact.** A whole Mac (about 6 million files) in roughly 25 seconds; a home folder in a
-  few seconds. Sizes are allocated blocks, so they match Finder's "on disk". For the startup disk,
-  every other APFS volume gets an exact slice, so the chart adds up to the disk's used space to the
-  byte. The [performance notes](docs/PERFORMANCE.md) have the measurements.
-- **Findings.** Trash, Downloads, Xcode build files and archives, iOS device support and
-  simulators, iPhone backups, Docker, app caches, npm, Cargo, Gradle, Movies, Mail, `node_modules`,
-  Chrome's update leftovers. Each is **Safe to delete** or **Review first**, with a one-line reason.
-- **A cleanup plan, not a delete button.** Tick folders, findings or panel groups to stage them. The
-  plan shows what's selected, what's shared with other files, and what will actually free. **Review
-  and Move to Trash…** lists every path once more before anything moves, and then the folders tumble
-  into a little bin while the real move runs (with Reduce Motion on, they fade in instead). Finder does the move, so **Put Back** works; the few
-  folders Finder refuses (very large `node_modules`, say) go through NSFileManager instead.
-- **Empty Trash, with the real number.** File › Empty Trash… (⇧⌘⌫), or the button on the banner
-  after a cleanup, says what's in every Trash and that it can't be undone, then empties it and shows
-  how much free space the disk actually gained, measured, not assumed. Locked items stay put and are
-  counted. Without Full Disk Access it offers to have Finder do it.
-- **Merge as Clones.** The Duplicate files finding can merge instead of delete: each extra copy is
-  replaced in place by an APFS clone of the copy that stays, keeping its own name, dates,
-  permissions and tags. Nothing is deleted and nothing moves; the bytes are stored once. Copies that
-  changed since the scan, locked or hard-linked ones, and ones on another disk are left alone, and
-  the banner says how many.
-- **Developer caches, project by project.** Build outputs (`target`, `.next`, `Pods`, Gradle
-  `build`, …) are found only with their tool's file beside them (`Cargo.toml`, `Podfile`, …) or a
-  `CACHEDIR.TAG`, never by name alone, and never when git tracks files in them. Show the list to
-  tick projects one by one; ones that changed this week stay unticked when you tick the finding.
-  Docker, Go modules, Rust toolchains and Ollama models are shown with the command that cleans them
-  properly, and no checkbox.
-- **Never offer this.** Right-click anything › Never Offer This, or list it in Settings ›
-  Protected. It's still scanned and shown, but no finding offers it, it can't be staged, and the
-  move to the Trash refuses it and anything holding it, whoever asks, the CLI included. A finding
-  that holds something protected offers the rest; the panel says what it left out.
-- **Where is my space?** View › Where Is My Space… lays the startup disk out as lines that add up
-  to what APFS says is used, each marked measured, computed, macOS's estimate or unknown. Snapshots
-  are named for what they are; local Time Machine ones can be deleted there, with a second confirm
-  and macOS's own password prompt.
-- **It keeps up with Finder.** Empty the Trash, or drop something into it, and the Trash finding,
-  the folder's slice and the disks' free space follow within a couple of seconds, no rescan.
-- **Five looks.** **Settings › Appearance** switches between Classic (the default), Darkroom,
-  Ledger, Console and Bloom. All but Classic come in light and dark, and can follow macOS.
-- **Safe by design.** Broom only reads file metadata, never downloads cloud-only files, never
-  sends anything over the network except the optional classifier calls, and has no analytics.
-- **The investigator.** While a scan runs, a small ligne-claire investigator sniffs around with a
-  magnifier and reports what it's seeing. Purely decorative, and the best part.
+**Find what's big**
+- **Ask in plain words** from the 🧹 menu bar: *node modules*, *old dmg in downloads*, *xcode junk*
+  (Telugu works too: *node modules anni teesey*).
+- **A live sunburst** of the disk that fills in while it scans. A whole Mac in about 25 s, a home
+  folder in seconds ([numbers](docs/PERFORMANCE.md)).
+- **Findings** for the usual space hogs: Trash, Downloads, Xcode, app caches, npm, Cargo, Gradle,
+  Maven, Mail, duplicates and more.
+- **Developer caches, project by project.** `node_modules`, build outputs (`target`, `.next`,
+  `Pods`, …) and Python environments, each listed per project. A build folder only counts with its
+  tool's file beside it (`target` next to `Cargo.toml`), never when git tracks it. Projects you
+  touched this week stay unticked.
+- **Where is my space?** (View menu) The disk as lines that add up, each marked measured,
+  computed, estimated or unknown. Snapshots named for what they are.
+- **What grew** since your last scan, in amber beside each folder.
+
+**Clean it safely**
+- **Every item says why:** *Safe to delete*, *Review first*, or *Use its tool* (Docker, Go
+  modules, Rust toolchains, Ollama: no checkbox, just the command that cleans them properly).
+- **Nothing is deleted outright.** You stage a plan, review the list, and it goes to the Trash.
+  **Put Back** works.
+- **The real number.** What a delete frees counts clones and hard links once, so it never
+  promises space that won't come back.
+- **Empty Trash** (⇧⌘⌫) says what's there first, then shows how much the disk actually gained.
+- **Merge as Clones** turns duplicate files into APFS clones: every file stays, the space comes back.
+- **Never offer this.** Right-click › Never Offer This, or Settings › Protected. Broom, and any
+  agent using the CLI, will never move it, or anything holding it, to the Trash.
+
+**And**
+- Native macOS, written in Rust. No analytics; it only reads file metadata.
+- An optional AI reader double-checks what you meant. It sees folder names, never full paths, and
+  Broom works fully without it.
+- Five looks (Settings › Appearance), and a small investigator who comments while it scans.
+
+**Known limit:** files that share storage (APFS clones, hard links) are counted once per file in
+folder totals, so a whole-disk scan can read a little above the disk's size. **Where is my space?**
+shows how much. A fix is planned.
 
 ## Install
 
@@ -227,7 +203,7 @@ broom clean old dmg in downloads --all --yes   # include "review" groups too
 broom trash ~/Projects/x/node_modules ~/Library/Caches/pnpm --yes
 ```
 
-`find --json` returns `groups[]` with `label`, `safety` (`safe` or `review`), `precise` (a name,
+`find --json` returns `groups[]` with `label`, `safety` (`safe` or `review`; findings in `scan` can also be `manage`, meaning use its own tool), `precise` (a name,
 finding, extension or worktree match rather than a substring or kind guess), `bytes` and
 `folders[]` of `{path, bytes, items}`. An agent reads that, decides, and calls `trash` with the
 exact paths it wants; `clean --yes` is the shortcut for "everything precise and safe". `--ask` on
@@ -255,7 +231,10 @@ src/
 │   └── laya.rs      chat-completion second opinion
 ├── classify/      what kind of thing a path is (apps, caches, photos…), colours the chart by kind
 ├── comic.rs       the investigator and the captions
-├── trashcan.rs    the drop (folders tumbling into the bin) and the Finder-then-NSFileManager move
+├── trashcan.rs    the drop, the move to the Trash (the one door, protect-checked), Empty Trash
+├── protect.rs     Settings › Protected: what may never be offered or moved
+├── duplicates.rs  duplicate files, and merging them into APFS clones
+├── space.rs       "Where is my space?": the disk's ledger and its snapshots
 ├── single.rs      one Broom at a time: a Unix socket in the state folder hands a second launch over
 ├── scan.rs        parallel walk (outline → hotspots → depth-first), the flat Tree, names index, frees_of
 ├── scan/catchup.rs bringing a kept tree up to date from the folders that changed
@@ -266,7 +245,7 @@ src/
 ├── dirlist.rs     getattrlistbulk/openat directory listing, with a portable fallback
 ├── live.rs        live per-folder totals during a scan, snapshots
 ├── disk.rs        the startup disk's APFS container: exact slices for the other volumes
-├── findings.rs    the catalog of known space hogs and how to recognise them
+├── findings.rs    the catalog of known space hogs, build outputs, and how to recognise them
 ├── sunburst.rs    layout in angle space, painting, polar hit-testing
 ├── theme.rs       the five themes: palettes for light and dark, radius, fonts, the six-hue ladder
 ├── settings.rs    settings file and state dir
