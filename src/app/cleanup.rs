@@ -171,6 +171,36 @@ impl Broom {
         cx.notify();
     }
 
+    /// "Never Offer This" / "Offer This Again": add `path` to the protect
+    /// list (Settings › Protected) or take it off. Adding applies at once;
+    /// taking off re-reads the disk, since what was held back has to be found
+    /// again to be offered.
+    pub(super) fn set_protected(&mut self, path: PathBuf, on: bool, cx: &mut Context<Self>) {
+        let line = abbreviate_home(&path.to_string_lossy());
+        let shown = line.clone();
+        if on {
+            if !self.settings.protected.contains(&line) {
+                self.settings.protected.push(line);
+            }
+        } else {
+            let home = home_dir();
+            self.settings.protected.retain(|p| {
+                let expanded = p.strip_prefix("~/").map(|rest| home.join(rest)).unwrap_or_else(|| PathBuf::from(p));
+                expanded != path
+            });
+        }
+        let _ = settings::save(&self.settings);
+        self.apply_protection();
+        self.collector_changed(cx);
+        if on {
+            self.show_banner(Some(format!("Protected {shown}\nBroom won't offer it or move it to the Trash. Settings › Protected lists it.")), cx);
+        } else {
+            self.show_banner(Some(format!("{shown} can be offered again\nReading the disk again to see what it holds…")), cx);
+            self.refresh_in_place(cx);
+        }
+        cx.notify();
+    }
+
     /// A checkbox on a group (a finding, an ask card) was clicked.
     pub(super) fn click_group_tick(&mut self, nodes: &[usize], cx: &mut Context<Self>) {
         if let Some(r) = self.results() {
@@ -207,7 +237,9 @@ impl Broom {
         match &self.screen {
             Screen::Results(r) => col.child(self.render_findings(&r.findings, Some(r), cx)).child(self.render_plan(r, cx)),
             Screen::Scanning(s) => {
-                let early = findings::early_findings(&s.progress.early_findings.lock().unwrap());
+                let mut early = findings::early_findings(&s.progress.early_findings.lock().unwrap());
+                let protected = self.settings.protect_paths();
+                early.retain(|f| f.path.as_ref().is_none_or(|p| crate::protect::blocking(p, &protected).is_none()));
                 col.child(self.render_findings(&early, None, cx))
                     .child(plan_placeholder("The plan opens when the scan finishes."))
             }
@@ -364,6 +396,23 @@ impl Broom {
                     }),
             )
             .child(list)
+            // Said, not hidden: what the protect list kept off the findings.
+            .when_some(results.filter(|r| !r.not_offered.is_empty()), |d, r| {
+                let names: Vec<String> = r.not_offered.iter().map(|p| abbreviate_home(&p.to_string_lossy())).collect();
+                let n = names.len();
+                let shown = names.iter().take(2).cloned().collect::<Vec<_>>().join(", ");
+                let more = if n > 2 { format!(" and {} more", n - 2) } else { String::new() };
+                let all = names.join("\n");
+                d.child(
+                    path_tip(div().id("not-offered"), all)
+                        .px_3()
+                        .pt_1()
+                        .text_xs()
+                        .text_color(rgb(colors().muted))
+                        .truncate()
+                        .child(format!("Not offered, protected: {shown}{more}")),
+                )
+            })
     }
 
     /// The cleanup plan: one line per staged item, the totals, and the way to the

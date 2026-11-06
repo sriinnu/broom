@@ -46,6 +46,40 @@ mod pick_tests {
             .collect()
     }
 
+    /// Protected things, what's inside them and what holds them can't be
+    /// staged by any route, and protecting something takes it off the plan.
+    #[test]
+    fn protected_rows_cannot_be_staged() {
+        let root = std::env::temp_dir().join(format!("broom-protect-rows-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let tree = tree_with_three(&root);
+        let mut r = results_for(&root, &tree);
+        let (alpha, beta) = (row_named(&tree, "alpha"), row_named(&tree, "beta"));
+        let a_file = tree.nodes[alpha].children[0];
+        r.collect(alpha);
+        assert_eq!(r.collector, vec![alpha]);
+
+        r.protect(&[root.join("alpha/a.bin")]);
+        assert!(r.collector.is_empty(), "protecting took the folder holding it off the plan");
+        assert!(!r.stageable(alpha), "holds something protected");
+        assert!(!r.stageable(a_file), "protected itself");
+        assert!(r.stageable(beta));
+        r.collect(alpha);
+        assert!(r.collector.is_empty(), "collect");
+        r.stage_rows(&[alpha, a_file]);
+        assert!(r.collector.is_empty(), "stage_rows");
+        r.toggle_group(&[alpha, a_file]);
+        assert!(r.collector.is_empty(), "toggle_group");
+        r.toggle_staged(a_file);
+        assert!(r.collector.is_empty(), "toggle_staged");
+
+        r.protect(&[root.join("alpha")]);
+        assert!(!r.stageable(a_file), "inside something protected");
+        r.protect(&[]);
+        assert!(r.stageable(alpha) && r.stageable(a_file), "off the list, back to normal");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn shift_click_takes_the_range() {
         let root = std::env::temp_dir().join(format!("broom-pick-{}", std::process::id()));

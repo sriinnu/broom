@@ -157,6 +157,7 @@ pub(super) struct SettingsState {
     pub(super) custom: Entity<EditableTextState>,
     /// The "add excluded folder" field.
     pub(super) exclude_input: Entity<EditableTextState>,
+    pub(super) protect_input: Entity<EditableTextState>,
     pub(super) note: Option<SharedString>,
     pub(super) note_epoch: u64,
     /// Where a damaged settings file was moved at startup, said once: taken

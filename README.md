@@ -78,6 +78,14 @@ for the usual space hogs, and a cleanup plan you stage with checkboxes before an
   permissions and tags. Nothing is deleted and nothing moves; the bytes are stored once. Copies that
   changed since the scan, locked or hard-linked ones, and ones on another disk are left alone, and
   the banner says how many.
+- **Never offer this.** Right-click anything › Never Offer This, or list it in Settings ›
+  Protected. It's still scanned and shown, but no finding offers it, it can't be staged, and the
+  move to the Trash refuses it and anything holding it, whoever asks, the CLI included. A finding
+  that holds something protected offers the rest; the panel says what it left out.
+- **Where is my space?** View › Where Is My Space… lays the startup disk out as lines that add up
+  to what APFS says is used, each marked measured, computed, macOS's estimate or unknown. Snapshots
+  are named for what they are; local Time Machine ones can be deleted there, with a second confirm
+  and macOS's own password prompt.
 - **It keeps up with Finder.** Empty the Trash, or drop something into it, and the Trash finding,
   the folder's slice and the disks' free space follow within a couple of seconds, no rescan.
 - **Five looks.** **Settings › Appearance** switches between Classic (the default), Darkroom,
@@ -223,6 +231,7 @@ disk root, system folders, volumes, your home folder and its standard folders, a
 **Agents can only move things to the Trash.** Nothing on this side deletes for good, empties the
 Trash or rewrites files; those stay in the window, behind a confirm a person clicks. A test reads
 the CLI's code and fails the build if that ever changes.
+Anything in Settings › Protected is refused too, and `broom scan` lists what it left out.
 Exit codes: 0 done, 1 something failed (partial failures list what didn't move), 2 usage.
 
 ## How it works

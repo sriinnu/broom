@@ -103,6 +103,13 @@ pub(super) struct Results {
     pub(super) legend_hover: Option<Category>,
     /// Folders that look like someone's home folder (`home_folders`).
     pub(super) homes: Vec<usize>,
+    /// What's on the protect list (Settings › Protected) in this tree, and
+    /// every folder holding one: neither can be staged. See `protect`.
+    pub(super) protected: HashSet<usize>,
+    pub(super) holds_protected: HashSet<usize>,
+    /// What the findings would have offered but for the protect list, so the
+    /// panel can say it left them out.
+    pub(super) not_offered: Vec<PathBuf>,
     /// The query at the centre of the current ask state.
     pub(super) query: SharedString,
     pub(super) ask: AskState,
@@ -273,6 +280,9 @@ impl Results {
             categories: HashMap::new(),
             legend_hover: None,
             homes: Vec::new(),
+            protected: HashSet::new(),
+            holds_protected: HashSet::new(),
+            not_offered: Vec::new(),
             query: SharedString::default(),
             ask: AskState::Idle,
             matches: None,
@@ -540,6 +550,7 @@ impl Results {
             || self.tree.nodes[ix].parent.is_none()
             || self.tree.nodes[ix].kind == Kind::Other
             || self.homes.contains(&ix)
+            || self.shielded(ix)
         {
             return;
         }
@@ -562,6 +573,66 @@ impl Results {
             && self.tree.nodes[ix].parent.is_some()
             && self.tree.nodes[ix].kind != Kind::Other
             && !self.homes.contains(&ix)
+            && !self.shielded(ix)
+    }
+
+    /// `ix` is protected, inside something protected, or holds something
+    /// protected: moving it to the Trash would move a protected thing.
+    pub(super) fn shielded(&self, ix: usize) -> bool {
+        if self.protected.is_empty() {
+            return false;
+        }
+        if self.holds_protected.contains(&ix) {
+            return true;
+        }
+        let mut at = Some(ix);
+        while let Some(n) = at {
+            if self.protected.contains(&n) {
+                return true;
+            }
+            at = self.tree.nodes[n].parent;
+        }
+        false
+    }
+
+    /// Take the protect list into account: mark what's protected, take it
+    /// out of the plan, the findings and the duplicate pairs, and note what
+    /// the findings left out. Safe to run again whenever the list changes.
+    pub(super) fn protect(&mut self, list: &[PathBuf]) {
+        self.protected.clear();
+        self.holds_protected.clear();
+        for p in list {
+            // Protecting a folder above the scanned one protects all of it.
+            if self.tree.root_path.starts_with(p) {
+                self.protected.insert(Tree::ROOT);
+                continue;
+            }
+            let found = self.tree.find(p).or_else(|| self.tree.find(&p.canonicalize().ok()?));
+            if let Some(ix) = found {
+                self.protected.insert(ix);
+                let mut at = self.tree.nodes[ix].parent;
+                while let Some(n) = at {
+                    if !self.holds_protected.insert(n) {
+                        break;
+                    }
+                    at = self.tree.nodes[n].parent;
+                }
+            }
+        }
+        let before = self.collector.len();
+        let shielded: Vec<usize> = self.collector.iter().copied().filter(|&c| self.shielded(c)).collect();
+        self.collector.retain(|c| !shielded.contains(c));
+        if self.collector.len() != before {
+            self.collector_frees.set(None);
+        }
+        let mut skipped = findings::shield(&mut self.findings, &self.tree, list);
+        self.dupe_pairs.retain(|p| crate::protect::blocking(&p.extra, list).is_none());
+        // Keep what earlier passes left out (a refresh re-offers nothing
+        // the list still covers, so this only grows until a rescan).
+        skipped.extend(self.not_offered.drain(..).filter(|p| crate::protect::blocking(p, list).is_some()));
+        skipped.sort();
+        skipped.dedup();
+        self.not_offered = skipped;
     }
 
     /// What the checkbox on `ix` shows: on if staged, implied if a folder
@@ -640,7 +711,7 @@ impl Results {
         let tree = &self.tree;
         let mut wanted: HashSet<usize> = self.collector.iter().copied().collect();
         let start = wanted.len();
-        wanted.extend(rows.iter().copied().filter(|&ix| ix != Tree::ROOT && tree.nodes[ix].parent.is_some() && tree.nodes[ix].kind != Kind::Other && !self.homes.contains(&ix)));
+        wanted.extend(rows.iter().copied().filter(|&ix| ix != Tree::ROOT && tree.nodes[ix].parent.is_some() && tree.nodes[ix].kind != Kind::Other && !self.homes.contains(&ix) && !self.shielded(ix)));
         if wanted.len() == start {
             return;
         }

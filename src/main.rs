@@ -17,6 +17,7 @@ mod live;
 mod menubar;
 mod motion;
 mod onboarding;
+mod protect;
 mod refresh;
 mod scan;
 mod space;

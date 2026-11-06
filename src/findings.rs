@@ -118,6 +118,64 @@ pub fn refresh_location(findings: &mut Vec<Finding>, tree: &Tree, bases: &Bases,
     findings.sort_by(|a, b| b.size.cmp(&a.size));
 }
 
+/// Take everything protected (see `crate::protect`) out of the findings, so
+/// none is ever offered. A folder that is protected, or inside something
+/// protected, goes; a folder that only holds something protected is offered
+/// as what's beside it instead (protect `~/Library/Caches/Homebrew` and the
+/// other caches are still offered). Returns what was left out, so the UI can
+/// say so.
+pub fn shield(findings: &mut Vec<Finding>, tree: &Tree, protected: &[PathBuf]) -> Vec<PathBuf> {
+    let mut skipped = Vec::new();
+    if protected.is_empty() {
+        return skipped;
+    }
+    findings.retain_mut(|f| {
+        if f.nodes.is_empty() {
+            // Mid-scan: only the location is known.
+            return match &f.path {
+                Some(path) if crate::protect::blocking(path, protected).is_some() => {
+                    skipped.push(path.clone());
+                    false
+                }
+                _ => true,
+            };
+        }
+        let mut kept = Vec::new();
+        for &ix in &f.nodes {
+            split(tree, ix, protected, &mut kept, &mut skipped);
+        }
+        if kept != f.nodes {
+            f.nodes = kept;
+            f.size = f.nodes.iter().map(|&ix| tree.nodes[ix].size).sum();
+        }
+        !f.nodes.is_empty()
+    });
+    findings.sort_by(|a, b| b.size.cmp(&a.size));
+    skipped.sort();
+    skipped.dedup();
+    skipped
+}
+
+/// `ix` if nothing protected touches it; nothing if it's protected or inside
+/// something protected; else (it holds something protected) its children,
+/// each looked at the same way.
+fn split(tree: &Tree, ix: usize, protected: &[PathBuf], kept: &mut Vec<usize>, skipped: &mut Vec<PathBuf>) {
+    let path = tree.path_of(ix);
+    let Some((_, holds)) = crate::protect::how(&path, protected) else {
+        kept.push(ix);
+        return;
+    };
+    if !holds || tree.nodes[ix].kind != Kind::Dir {
+        skipped.push(path);
+        return;
+    }
+    for &child in &tree.nodes[ix].children {
+        if tree.nodes[child].kind != Kind::Other {
+            split(tree, child, protected, kept, skipped);
+        }
+    }
+}
+
 /// A hotspot's result as reported mid-scan.
 #[derive(Clone, Debug)]
 pub struct Early {
@@ -371,4 +429,45 @@ mod tests {
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].nodes, vec![2], "surviving finding keeps its node");
     }
+
+    /// Protected things are never offered: a protected location's finding
+    /// goes, a protected project leaves node_modules, and protecting a folder
+    /// above a finding counts as protecting it.
+    #[test]
+    fn protected_paths_are_never_offered() {
+        let dir = std::env::temp_dir().join(format!("broom-shield-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let home = dir.join("home");
+        write(&home.join("Downloads/setup.pkg"), 200_000);
+        write(&home.join(".Trash/old.dmg"), 300_000);
+        write(&home.join("code/app/node_modules/a/index.js"), 100_000);
+        write(&home.join("code/keep/node_modules/b/index.js"), 70_000);
+        let tree = scan(&dir, &Progress::default(), &[], 2);
+        let bases = Bases { home: Some(home.clone()), user_temp: None };
+        let mut findings = from_tree_min(&tree, &bases, 0);
+        let skipped = shield(&mut findings, &tree, &[home.join("Downloads"), home.join("code/keep")]);
+        assert!(findings.iter().all(|f| f.title != "Downloads"));
+        assert!(findings.iter().any(|f| f.title == "Trash"));
+        let modules = findings.iter().find(|f| f.title == "node_modules").unwrap();
+        assert_eq!(modules.nodes, vec![tree.find(&home.join("code/app/node_modules")).unwrap()]);
+        assert_eq!(modules.size, tree.nodes[modules.nodes[0]].size, "re-sized without the protected one");
+        assert_eq!(skipped, vec![home.join("Downloads"), home.join("code/keep/node_modules")]);
+
+        // Protecting one thing inside a location offers the rest of it.
+        write(&home.join(".Trash/other.zip"), 100_000);
+        let tree = scan(&dir, &Progress::default(), &[], 2);
+        let mut findings = from_tree_min(&tree, &bases, 0);
+        let skipped = shield(&mut findings, &tree, &[home.join(".Trash/old.dmg")]);
+        let trash = findings.iter().find(|f| f.title == "Trash").expect("the rest of the Trash");
+        assert_eq!(trash.nodes, vec![tree.find(&home.join(".Trash/other.zip")).unwrap()]);
+        assert_eq!(trash.size, tree.nodes[trash.nodes[0]].size);
+        assert_eq!(skipped, vec![home.join(".Trash/old.dmg")]);
+
+        // Protecting the whole home takes every finding inside it off.
+        let mut all = from_tree_min(&tree, &bases, 0);
+        shield(&mut all, &tree, &[home.clone()]);
+        assert!(all.is_empty(), "{:?}", all.iter().map(|f| f.title).collect::<Vec<_>>());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
+

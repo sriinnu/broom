@@ -459,6 +459,39 @@ impl Broom {
                 this.open_review(window, cx);
             })));
         }
+        // The protect list, from where you see the thing.
+        if let Screen::Results(r) = &self.screen {
+            if node != Tree::ROOT && r.tree.nodes[node].kind != Kind::Other {
+                let own = r.protected.contains(&node);
+                if own {
+                    items.push(item("menu-protect", "Offer This Again").on_click({
+                        let path = path.clone();
+                        cx.listener(move |this, _, _, cx| {
+                            this.context_menu = None;
+                            this.set_protected(path.clone(), false, cx);
+                        })
+                    }));
+                } else if !r.shielded(node) {
+                    items.push(item("menu-protect", "Never Offer This").on_click({
+                        let path = path.clone();
+                        cx.listener(move |this, _, _, cx| {
+                            this.context_menu = None;
+                            this.set_protected(path.clone(), true, cx);
+                        })
+                    }));
+                } else {
+                    // Inside or above something protected: say so, offer nothing.
+                    items.push(
+                        div()
+                            .id("menu-protected")
+                            .px_2()
+                            .py_1()
+                            .text_color(rgb(colors().muted))
+                            .child(if r.holds_protected.contains(&node) { "Holds Something Protected" } else { "Inside Something Protected" }),
+                    );
+                }
+            }
+        }
 
         deferred(
             anchored()

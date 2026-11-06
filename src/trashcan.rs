@@ -24,7 +24,32 @@ use crate::scan::Kind;
 /// "can't handle objects of this class", for some big folders such as a
 /// node_modules with ten thousand files) goes through NSFileManager instead.
 /// Not atomic: on an error, the caller checks which paths are still there.
+///
+/// Anything on the protect list, or holding something on it, is refused here
+/// and stays where it is, whoever asked (see `crate::protect`); the rest goes.
 pub fn send(paths: &[PathBuf]) -> Result<(), String> {
+    send_guarded(paths, &crate::protect::current())
+}
+
+fn send_guarded(paths: &[PathBuf], protected: &[PathBuf]) -> Result<(), String> {
+    let (paths, refused) = crate::protect::sort_out(paths, protected);
+    let sent = send_unprotected(&paths);
+    if refused.is_empty() {
+        return sent;
+    }
+    let refused = refused
+        .iter()
+        .map(|(path, by, holds)| if *holds { format!("{}: holds protected {}", path.display(), by.display()) } else { format!("{}: protected", path.display()) })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let refused = format!("{refused} (Settings › Protected)");
+    Err(match sent {
+        Ok(()) => refused,
+        Err(e) => format!("{e}; {refused}"),
+    })
+}
+
+fn send_unprotected(paths: &[PathBuf]) -> Result<(), String> {
     use trash::TrashContext;
     use trash::macos::{DeleteMethod, TrashContextExtMacos};
     if paths.is_empty() {
@@ -787,6 +812,23 @@ fn paint(window: &mut Window, bounds: Bounds<Pixels>, drop: &Drop) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The door every move to the Trash goes through refuses what's
+    /// protected, and what holds it, and leaves them where they are.
+    #[test]
+    fn send_refuses_protected_paths() {
+        let dir = std::env::temp_dir().join(format!("broom-send-protect-{}", std::process::id()));
+        let keep = dir.join("project/keep.txt");
+        std::fs::create_dir_all(keep.parent().unwrap()).unwrap();
+        std::fs::write(&keep, b"mine").unwrap();
+        let list = vec![keep.clone()];
+        let err = send_guarded(&[keep.clone(), dir.join("project")], &list).unwrap_err();
+        assert!(err.contains("keep.txt: protected"), "{err}");
+        assert!(err.contains("project: holds protected"), "{err}");
+        assert!(keep.exists(), "still where it was");
+        assert!(send_guarded(&[], &list).is_ok());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn temp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("broom-empty-{name}-{}", std::process::id()));

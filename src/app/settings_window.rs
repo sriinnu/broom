@@ -197,6 +197,7 @@ impl Broom {
                 rows,
                 custom: cx.new(|cx| EditableTextState::new(StringStorage::default(), cx)),
                 exclude_input: cx.new(|cx| EditableTextState::new(StringStorage::default(), cx)),
+                protect_input: cx.new(|cx| EditableTextState::new(StringStorage::default(), cx)),
                 note: None,
                 note_epoch: 0,
                 salvaged: self.settings_salvaged.take(),

@@ -26,6 +26,7 @@ pub(super) struct Merged {
     pub(super) changed: usize,
     pub(super) no_clone: usize,
     pub(super) locked: usize,
+    pub(super) protected: usize,
     pub(super) failed: Vec<String>,
 }
 
@@ -39,6 +40,7 @@ impl Merged {
             Err(Skip::Changed) => self.changed += 1,
             Err(Skip::NoClone) => self.no_clone += 1,
             Err(Skip::Locked) => self.locked += 1,
+            Err(Skip::Protected) => self.protected += 1,
             Err(Skip::Failed(why)) => self.failed.push(why),
         }
     }
@@ -56,6 +58,7 @@ impl Merged {
         left.extend(count(self.changed, "changed since the scan"));
         left.extend(count(self.no_clone, "on a disk without clones"));
         left.extend(count(self.locked, "locked or hard-linked"));
+        left.extend(count(self.protected, "protected"));
         left.extend(count(self.failed.len(), "failed"));
         let detail = if left.is_empty() {
             "Every file is where it was; the bytes are stored once.".to_string()

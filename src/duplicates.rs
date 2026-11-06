@@ -102,6 +102,8 @@ pub enum Skip {
     /// Locked, or hard-linked under another name (merging would keep the
     /// other name's bytes and free nothing).
     Locked,
+    /// On the protect list (Settings › Protected): Broom never rewrites it.
+    Protected,
     Failed(String),
 }
 
@@ -125,6 +127,9 @@ pub fn merge(pair: &Pair) -> Result<u64, Skip> {
     use std::os::macos::fs::MetadataExt as _;
     use std::os::unix::fs::MetadataExt;
     let (extra, keep) = (&pair.extra, &pair.keep);
+    if crate::protect::blocking(extra, &crate::protect::current()).is_some() {
+        return Err(Skip::Protected);
+    }
     let meta = extra.symlink_metadata().map_err(|_| Skip::Changed)?;
     let kept = keep.symlink_metadata().map_err(|_| Skip::Changed)?;
     if !meta.is_file() || !kept.is_file() || meta.len() != kept.len() {

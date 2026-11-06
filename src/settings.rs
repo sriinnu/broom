@@ -63,6 +63,11 @@ pub struct Settings {
     /// Folders to leave out of the scan, as typed. Expanded and resolved at
     /// scan time, not here — `~` means whatever the user's home is then.
     pub excludes: Vec<String>,
+    /// Files and folders Broom must never offer or move to the Trash, as
+    /// typed. Unlike an exclude they're still scanned and shown; they just
+    /// never appear in a finding, can't be staged, and `trashcan::send`
+    /// refuses them (and anything holding them), whoever asks.
+    pub protected: Vec<String>,
     /// Levels named up front before the main walk, so the chart can label them
     /// at once. Higher fills the ring faster and costs more on huge trees.
     pub outline_depth: usize,
@@ -112,6 +117,7 @@ impl Default for Settings {
         Self {
             v: SCHEMA,
             excludes: Vec::new(),
+            protected: Vec::new(),
             outline_depth: 2,
             live_refresh_ms: 100,
             banner_seconds: 8,
@@ -150,6 +156,8 @@ impl Settings {
         self.navigator_width = fit(self.navigator_width, NAVIGATOR_WIDTH, NAVIGATOR_RANGE);
         self.cleanup_width = fit(self.cleanup_width, CLEANUP_WIDTH, CLEANUP_RANGE);
         self.excludes.retain(|line| !line.trim().is_empty());
+        self.protected.retain(|line| !line.trim().is_empty());
+        self.protected.truncate(256);
         if self.default_root.trim().is_empty() {
             self.default_root = DEFAULT_ROOT.to_string();
         }
@@ -170,15 +178,26 @@ impl Settings {
     /// Entries that don't exist are kept: the user may be excluding a folder
     /// on a volume that isn't mounted yet.
     pub fn exclude_paths(&self) -> Vec<PathBuf> {
-        let home = std::env::var_os("HOME").map(PathBuf::from);
-        self.excludes
-            .iter()
-            .map(|line| match (line.strip_prefix("~/"), &home) {
-                (Some(rest), Some(home)) => home.join(rest),
-                _ => PathBuf::from(line),
-            })
-            .collect()
+        expand(&self.excludes)
     }
+
+    /// Protected paths, expanded the same way.
+    pub fn protect_paths(&self) -> Vec<PathBuf> {
+        expand(&self.protected)
+    }
+}
+
+/// Lines as typed, with `~` expanded against the current home.
+fn expand(lines: &[String]) -> Vec<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    lines
+        .iter()
+        .map(|line| match (line.strip_prefix("~/"), &home) {
+            (Some(rest), Some(home)) => home.join(rest),
+            _ if line == "~" => home.clone().unwrap_or_else(|| PathBuf::from(line)),
+            _ => PathBuf::from(line),
+        })
+        .collect()
 }
 
 /// What loading produced, including whether anything had to be salvaged.

@@ -172,6 +172,7 @@ impl Broom {
                                 recompute = r.tree_changed();
                             }
                         }
+                        this.apply_protection();
                         cx.notify();
                         recompute
                     })
@@ -313,6 +314,7 @@ impl Broom {
                         results.anim_start = clock::now() - ZOOM_DURATION;
                         let (tree, scan_id, elapsed) = (results.tree.clone(), results.scan_id, results.elapsed);
                         this.screen = Screen::Results(results);
+                        this.apply_protection();
                         let kept = tree.clone();
                         cx.background_spawn(async move { refresh::store(&meta, &kept, refresh::How::Full, elapsed) }).detach();
                         this.resolve_pending_findings(cx);
@@ -479,6 +481,7 @@ impl Broom {
         // No clone surveys, history record or duplicate search for a tree that is
         // about to be replaced: those run on the fresh one.
         self.screen = Screen::Results(results);
+        self.apply_protection();
         self.settings.last_root = Some(root_str);
         let _ = settings::save(&self.settings);
         self.refresh_in_place(cx);
@@ -548,6 +551,7 @@ impl Broom {
         self.context_menu = None;
         let (tree, scan_id, staged) = (results.tree.clone(), results.scan_id, !results.collector.is_empty());
         self.screen = Screen::Results(results);
+        self.apply_protection();
         let kept = tree.clone();
         cx.background_spawn(async move { refresh::store(&meta, &kept, how, elapsed) }).detach();
         self.resolve_pending_findings(cx);
@@ -645,6 +649,16 @@ impl Broom {
         .detach();
     }
 
+    /// Hold the results on screen to the protect list (Settings › Protected):
+    /// nothing on it is offered or can be staged. Run whenever findings land
+    /// and whenever the list changes.
+    pub(super) fn apply_protection(&mut self) {
+        let list = self.settings.protect_paths();
+        if let Some(r) = self.results() {
+            r.protect(&list);
+        }
+    }
+
     /// Look for duplicate files in the background, on the survey pool so it
     /// queues behind the clone surveys instead of starving searches; the
     /// finding joins the list when it's done.
@@ -662,8 +676,11 @@ impl Broom {
                         r.dupe_pairs = pairs;
                         r.findings.push(finding);
                         r.findings.sort_by(|a, b| b.size.cmp(&a.size));
-                        cx.notify();
                     }
+                }
+                if this.results().is_some_and(|r| r.scan_id == scan_id) {
+                    this.apply_protection();
+                    cx.notify();
                 }
             });
         })
