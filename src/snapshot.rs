@@ -108,6 +108,20 @@ pub fn install(window: &mut Window, cx: &mut Context<Broom>) {
                     })
                     .ok();
                 }
+                // `right-click x y`: the secondary button, for context menus.
+                "right-click" => {
+                    let position = point(px(num(1)), px(num(2)));
+                    cx.update(|window, cx| {
+                        move_to(window, cx, position);
+                        let modifiers = gpui::Modifiers::default();
+                        window.dispatch_event(
+                            PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Right, position, modifiers, click_count: 1, first_mouse: false }),
+                            cx,
+                        );
+                        window.dispatch_event(PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Right, position, modifiers, click_count: 1 }), cx);
+                    })
+                    .ok();
+                }
                 // `key cmd-3`: type a keystroke, as the keymap sees it.
                 "key" => {
                     if let Some(Ok(keystroke)) = parts.get(1).map(|k| gpui::Keystroke::parse(k)) {

@@ -394,6 +394,8 @@ impl Broom {
             _ => return div().into_any_element(),
         };
         let node = menu.node;
+        // Protected rows offer nothing that would move them (`Results::shielded`).
+        let actionable = actionable && !matches!(&self.screen, Screen::Results(r) if r.shielded(node));
 
         let item = |id: &'static str, label: &'static str| {
             div()
