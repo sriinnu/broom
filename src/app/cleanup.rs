@@ -293,6 +293,8 @@ impl Broom {
                             }
                         }))
                     })
+                    // A Manage finding has no checkbox; keep its title in line with the rest.
+                    .when(results.is_some() && tick.is_none(), |d| d.child(div().flex_none().w(px(15.))))
                     .when_some(tick, |d, tick| {
                         let nodes = nodes.clone();
                         d.child(

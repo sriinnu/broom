@@ -196,7 +196,11 @@ impl Broom {
                     .flex_col()
                     .gap_1()
                     .text_sm()
-                    .child(format!("{copies} will become APFS clones of the copy that stays, freeing about {}.", format_size(frees)))
+                    .child(format!(
+                        "{copies} will become {} of the copy that stays, freeing about {}.",
+                        if n == 1 { "an APFS clone" } else { "APFS clones" },
+                        format_size(frees)
+                    ))
                     .child("Every file keeps its place, name, dates and tags. Nothing is deleted or moved."),
             )
             .child(
