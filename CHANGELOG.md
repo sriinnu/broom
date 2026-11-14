@@ -4,7 +4,7 @@
 
 **Fixed**
 - A typo or an unknown flag on the command line is an error (exit 2), not a window. `broom --version` added.
-- A whole-disk scan leaves two cores free, so the Mac stays responsive while it runs.
+- A whole-disk scan leaves up to two cores free, so the Mac stays responsive while it runs.
 
 ## 0.6.0 (2026-11-06)
 

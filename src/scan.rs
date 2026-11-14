@@ -563,14 +563,19 @@ pub fn sort_children(nodes: &mut [Node], ix: usize) {
     nodes[ix].children = children;
 }
 
-/// Scans leave two cores free: rayon gets two threads fewer than the Mac has
-/// cores, so a whole-disk scan never pins the machine. (Lowering the threads'
+/// Scans leave up to two cores free: rayon gets two threads fewer than the Mac
+/// has cores (never fewer than two), so a whole-disk scan doesn't pin the machine.
+/// On a Mac with four cores or fewer that is two threads. (Lowering the threads'
 /// QoS was tried and dropped: macOS then throttles their disk reads too, and on a
-/// busy Mac a scan took 4 to 25 times longer.) Call once, before the first scan.
+/// busy Mac a scan took 4 to 25 times longer.) Called first thing in `main`, so no
+/// other rayon use can build the default pool before it.
 pub fn init_pool() {
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     let threads = cores.saturating_sub(2).max(2);
-    let _ = rayon::ThreadPoolBuilder::new().num_threads(threads).build_global();
+    if let Err(e) = rayon::ThreadPoolBuilder::new().num_threads(threads).build_global() {
+        // Scans still work on rayon's default pool, just without the cap: say so.
+        eprintln!("broom: scan threads not capped ({e})");
+    }
 }
 
 /// The startup disk's name as Finder shows it.
