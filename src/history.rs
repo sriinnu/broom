@@ -161,6 +161,7 @@ mod tests {
             parent,
             children,
             items: 1,
+            clone: 0,
         };
         Tree {
             root_path: PathBuf::from(root),
@@ -172,6 +173,7 @@ mod tests {
             errors: 0,
             cloud_only: 0,
             index: std::sync::Arc::new(std::sync::OnceLock::<NameIndex>::new()),
+            shared: Default::default(),
         }
     }
 

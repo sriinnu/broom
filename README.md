@@ -61,7 +61,10 @@ for the usual space hogs, and a cleanup plan you stage with checkboxes before an
 - **Nothing is deleted outright.** You stage a plan, review the list, and it goes to the Trash.
   **Put Back** works.
 - **The real number.** What a delete frees counts clones and hard links once, so it never
-  promises space that won't come back.
+  promises space that won't come back. Folder totals count blocks that APFS clones share once
+  too, so a whole-disk scan adds up to what the disk really holds. A clone still shows its full
+  size, with a *clone* tag; a folder holding clones shows *+X shared*, and its slice in the chart
+  is hatched by that much.
 - **Empty Trash** (⇧⌘⌫) says what's there first, then shows how much the disk actually gained.
 - **Merge as Clones** turns duplicate files into APFS clones: every file stays, the space comes back.
 - **Never offer this.** Right-click › Never Offer This, or Settings › Protected. Broom, and any
@@ -73,9 +76,8 @@ for the usual space hogs, and a cleanup plan you stage with checkboxes before an
   Broom works fully without it.
 - Five looks (Settings › Appearance), and a small investigator who comments while it scans.
 
-**Known limit:** files that share storage (APFS clones, hard links) are counted once per file in
-folder totals, so a whole-disk scan can read a little above the disk's size. **Where is my space?**
-shows how much. A fix is planned.
+**Known limit:** a clone that was edited after copying still shares some blocks with the
+original, and those are counted once per file. **Where is my space?** shows any overcount left.
 
 ## Install
 

@@ -79,7 +79,7 @@ impl Tree {
                     drop(rewalker);
                     let mut nodes = Vec::new();
                     flatten(raw, None, &mut nodes);
-                    let fresh = Tree { root_path: path.clone(), nodes, errors: 0, cloud_only: 0, index: Default::default() };
+                    let fresh = Tree { root_path: path.clone(), nodes, errors: 0, cloud_only: 0, index: Default::default(), shared: Default::default() };
                     self.graft(ix, &fresh);
                     stats.walked += 1;
                 }
@@ -110,6 +110,9 @@ impl Tree {
         self.errors += progress.errors.load(Ordering::Relaxed);
         self.cloud_only += progress.cloud_only.load(Ordering::Relaxed);
         self.index = Arc::new(std::sync::OnceLock::new());
+        self.shared = Arc::default();
+        // Still off the UI thread: build the clone table now.
+        self.shared(Tree::ROOT);
         stats
     }
 
@@ -153,7 +156,7 @@ impl Tree {
     /// there now. Returns how many new folders had to be walked in full.
     fn relist(&mut self, ix: usize, walker: &Walker, progress: &Progress) -> usize {
         let path = self.path_of(ix);
-        let listing = dirlist::Dir::open(&path).and_then(|dir| dir.list(&path, false));
+        let listing = dirlist::Dir::open(&path).and_then(|dir| dir.list(&path, true));
         let Ok(listing) = listing else {
             // Unreadable now (permissions changed): keep what we knew rather than
             // pretend it emptied.
@@ -190,16 +193,18 @@ impl Tree {
                     Some(o) if entry.nlink > 1 && self.nodes[o].kind == Kind::File => self.nodes[o].size,
                     _ => entry.size,
                 };
+                let clone = if size > 0 { super::clone_family(entry.sharing) } else { 0 };
                 match old.filter(|&o| self.nodes[o].kind == Kind::File) {
                     Some(o) => {
                         self.nodes[o].size = size;
+                        self.nodes[o].clone = clone;
                         children.push(o);
                     }
                     None => {
                         if let Some(o) = old {
                             self.detach(o);
                         }
-                        children.push(self.push(Node { name: entry.name.into(), size, kind: Kind::File, parent: Some(ix), children: Vec::new(), items: 1 }));
+                        children.push(self.push(Node { name: entry.name.into(), size, kind: Kind::File, parent: Some(ix), children: Vec::new(), items: 1, clone }));
                     }
                 }
                 continue;
@@ -217,7 +222,7 @@ impl Tree {
                     self.detach(o);
                 }
                 progress.cloud_only.fetch_add(1, Ordering::Relaxed);
-                children.push(self.push(Node { name: entry.name.into(), size: entry.size, kind: Kind::Dir, parent: Some(ix), children: Vec::new(), items: 0 }));
+                children.push(self.push(Node { name: entry.name.into(), size: entry.size, kind: Kind::Dir, parent: Some(ix), children: Vec::new(), items: 0, clone: 0 }));
                 continue;
             }
             match old.filter(|&o| self.nodes[o].kind == Kind::Dir) {
