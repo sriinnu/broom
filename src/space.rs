@@ -154,6 +154,8 @@ pub struct Inputs {
     pub scanned: Option<u64>,
     /// Folders that scan couldn't read.
     pub unreadable: u64,
+    /// Bytes pure clones share inside `scanned`, which counts them once.
+    pub shared: u64,
     pub snapshots: Vec<Snapshot>,
 }
 
@@ -180,6 +182,7 @@ pub fn gather(disk_name: String, scanned: Option<u64>, unreadable: u64) -> Optio
         extras: layout.extras,
         scanned,
         unreadable,
+        shared: 0,
         snapshots,
     })
 }
@@ -207,7 +210,16 @@ pub fn ledger(i: &Inputs) -> Vec<Line> {
             //   take space no file count sees, so it can add up to LESS.
             // Only the net shows. Which way it leans is shown, not hidden.
             lines.push(line(1, "Your files, apps and the rest", Some(i.data_used), How::Measured, "The Data volume: everything that isn't macOS itself."));
-            lines.push(line(2, "Files Broom read", Some(scanned), How::Measured, "The last whole-disk scan, each file at its full size on disk."));
+            lines.push(line(2, "Files Broom read", Some(scanned), How::Measured, "The last whole-disk scan. Blocks that APFS clones share count once."));
+            if i.shared > 0 {
+                lines.push(line(
+                    3,
+                    "Shared by clones",
+                    Some(i.shared),
+                    How::Measured,
+                    "Inside the line above, not added again: what the clones would take on top if each were a separate copy. Merge as Clones grows this.",
+                ));
+            }
             let mut parts = Vec::new();
             if i.unreadable > 0 {
                 parts.push(format!("{} Broom couldn't read (Full Disk Access lets it)", plural(i.unreadable, "folder", "folders")));
@@ -224,7 +236,7 @@ pub fn ledger(i: &Inputs) -> Vec<Line> {
                     Some(scanned - i.data_used),
                     How::Computed,
                     format!(
-                        "The files add up to more than the volume holds: blocks several files share (APFS clones, copies that cost nothing until edited; hard links) count once per file. At least this much is shared, more if anything is unseen: {unseen}."
+                        "The files add up to more than the volume holds: blocks that partly edited clones still share count once per file. At least this much is shared, more if anything is unseen: {unseen}."
                     ),
                 ));
             } else {
@@ -313,6 +325,7 @@ mod tests {
             extras: vec![("macOS".into(), 80), ("Swap (VM)".into(), 20)],
             scanned: Some(450),
             unreadable: 3,
+            shared: 0,
             snapshots: vec![Snapshot { name: "com.apple.TimeMachine.2026-11-06-101500.local".into(), kind: SnapshotKind::TimeMachine { date: "2026-11-06-101500".into() }, purgeable: true, on_data: true }],
         }
     }

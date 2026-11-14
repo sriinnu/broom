@@ -750,7 +750,7 @@ mod tests {
     use crate::scan::Node;
 
     fn node(name: &str, size: u64, kind: Kind, parent: Option<usize>) -> Node {
-        Node { name: name.into(), size, kind, parent, children: Vec::new(), items: 1 }
+        Node { name: name.into(), size, kind, parent, children: Vec::new(), items: 1, clone: 0 }
     }
 
     /// root → code/app/node_modules (3 GB), code/lib/node_modules (1 GB),
@@ -774,7 +774,7 @@ mod tests {
         let _ = push(&mut nodes, "a.dmg", 2_000_000_000, Kind::File, downloads);
         let _ = push(&mut nodes, "b.dmg", 1_000_000_000, Kind::File, downloads);
         let _ = push(&mut nodes, "Photos.photoslibrary", 5_000_000_000, Kind::Dir, 0);
-        Tree { root_path: PathBuf::from("/t"), nodes, errors: 0, cloud_only: 0, index: Default::default() }
+        Tree { root_path: PathBuf::from("/t"), nodes, errors: 0, cloud_only: 0, index: Default::default(), shared: Default::default() }
     }
 
     fn finding(title: &'static str, nodes: Vec<usize>, size: u64) -> Finding {
@@ -840,7 +840,7 @@ mod tests {
         let small = add(&mut nodes, "small", 100_000_000);
         let mid = add(&mut nodes, "mid", 500_000_000);
         let big = add(&mut nodes, "big", 900_000_000);
-        let tree = Tree { root_path: PathBuf::from("/t"), nodes, errors: 0, cloud_only: 0, index: Default::default() };
+        let tree = Tree { root_path: PathBuf::from("/t"), nodes, errors: 0, cloud_only: 0, index: Default::default(), shared: Default::default() };
         // Filed in traversal (ascending-size) order on purpose.
         let finding = finding("hogs", vec![small, mid, big], 1_500_000_000);
         // No words: the findings alone, as suggestions.
@@ -858,7 +858,7 @@ mod tests {
             nodes.push(node("node_modules", 5_000_000, Kind::Dir, Some(0)));
             nodes[0].children.push(ix);
         }
-        let tree = Tree { root_path: PathBuf::from("/t"), nodes, errors: 0, cloud_only: 0, index: Default::default() };
+        let tree = Tree { root_path: PathBuf::from("/t"), nodes, errors: 0, cloud_only: 0, index: Default::default(), shared: Default::default() };
         let groups = candidates(&tree, &[], "node_modules");
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].nodes.len(), MAX_NODES_PER_GROUP, "nodes are capped");
@@ -889,7 +889,7 @@ mod tests {
         add(&mut nodes, ".git", 100, Kind::File, wt);
         let wt2 = add(&mut nodes, "broom-fix", 2_500_000, Kind::Dir, 0);
         add(&mut nodes, ".git", 100, Kind::File, wt2);
-        let tree = Tree { root_path: PathBuf::from("/t"), nodes, errors: 0, cloud_only: 0, index: Default::default() };
+        let tree = Tree { root_path: PathBuf::from("/t"), nodes, errors: 0, cloud_only: 0, index: Default::default(), shared: Default::default() };
         let groups = candidates(&tree, &[], "all worktrees");
         let group = groups.iter().find(|g| g.label.starts_with("Git worktrees")).expect("a worktrees group");
         assert_eq!(group.nodes, vec![wt2, wt], "linked checkouts only, largest first; the main repo stays");
@@ -907,7 +907,7 @@ mod tests {
         };
         let outer = add(&mut nodes, "dist", 5_000_000, 0);
         let _inner = add(&mut nodes, "dist", 2_000_000, outer);
-        let tree = Tree { root_path: PathBuf::from("/t"), nodes, errors: 0, cloud_only: 0, index: Default::default() };
+        let tree = Tree { root_path: PathBuf::from("/t"), nodes, errors: 0, cloud_only: 0, index: Default::default(), shared: Default::default() };
         let groups = candidates(&tree, &[], "dist folders");
         assert_eq!(groups.len(), 1, "{:?}", groups.iter().map(|g| g.label.clone()).collect::<Vec<_>>());
         assert_eq!(groups[0].nodes, vec![outer]);
@@ -940,7 +940,7 @@ mod tests {
         let inner = add(&mut nodes, "downloads-old", 1_000_000_000, Kind::Dir, downloads);
         let library = add(&mut nodes, "Library", 0, Kind::Dir, home);
         let developer = add(&mut nodes, "Developer", 2_000_000_000, Kind::Dir, library);
-        let tree = Tree { root_path: PathBuf::from("/t"), nodes, errors: 0, cloud_only: 0, index: Default::default() };
+        let tree = Tree { root_path: PathBuf::from("/t"), nodes, errors: 0, cloud_only: 0, index: Default::default(), shared: Default::default() };
         let group = CandidateGroup { source: Source::Pattern, label: "x".into(), detail: String::new(), nodes: vec![downloads, inner, developer], total: 0, safety: Safety::Review };
         assert_eq!(collectable(&tree, &[home], &group, Scope::WholeTree, 0), vec![inner]);
         let finding = CandidateGroup { source: Source::Finding, nodes: vec![downloads], ..group };
@@ -962,7 +962,7 @@ mod tests {
         add(&mut nodes, ".git", 100, Kind::File, wt);
         let wt2 = add(&mut nodes, "broom-fix", 2_500_000, Kind::Dir, 0);
         add(&mut nodes, ".git", 100, Kind::File, wt2);
-        let tree = Tree { root_path: PathBuf::from("/t"), nodes, errors: 0, cloud_only: 0, index: Default::default() };
+        let tree = Tree { root_path: PathBuf::from("/t"), nodes, errors: 0, cloud_only: 0, index: Default::default(), shared: Default::default() };
         let groups = candidates(&tree, &[], "delete broom worktrees");
         let wts = groups.iter().find(|g| g.source == Source::Worktree).expect("the precise group wins the dedupe");
         assert_eq!(wts.nodes, vec![wt2, wt]);
@@ -987,7 +987,7 @@ mod tests {
         let res = add(&mut nodes, "Resources", 0, Kind::Dir, app);
         add(&mut nodes, "package.json", 100, Kind::File, res);
         let bundled = add(&mut nodes, "node_modules", 9_000_000, Kind::Dir, res);
-        let tree = Tree { root_path: PathBuf::from("/t"), nodes, errors: 0, cloud_only: 0, index: Default::default() };
+        let tree = Tree { root_path: PathBuf::from("/t"), nodes, errors: 0, cloud_only: 0, index: Default::default(), shared: Default::default() };
         let groups = candidates(&tree, &[], "target folders and node_modules");
         let safe_target = groups.iter().find(|g| g.label.starts_with("target") && g.safety == Safety::Safe).expect("cargo's target is safe");
         assert_eq!(safe_target.nodes, vec![real]);
@@ -1020,7 +1020,7 @@ mod tests {
         let plain = add(&mut nodes, "node_modules", Kind::Dir);
         let slice = add(&mut nodes, "macOS", Kind::Other);
         nodes.push(node("detached", 1, Kind::Dir, None));
-        let tree = Tree { root_path: PathBuf::from("/t"), nodes, errors: 0, cloud_only: 0, index: Default::default() };
+        let tree = Tree { root_path: PathBuf::from("/t"), nodes, errors: 0, cloud_only: 0, index: Default::default(), shared: Default::default() };
         let group = CandidateGroup {
             source: Source::Folder,
             label: "x".into(),
@@ -1035,7 +1035,7 @@ mod tests {
         let mut nodes = vec![node("root", 0, Kind::Dir, None)];
         let inner = add(&mut nodes, "inside", Kind::Dir);
         let outside = add(&mut nodes, "outside", Kind::Dir);
-        let tree = Tree { root_path: PathBuf::from("/t"), nodes, errors: 0, cloud_only: 0, index: Default::default() };
+        let tree = Tree { root_path: PathBuf::from("/t"), nodes, errors: 0, cloud_only: 0, index: Default::default(), shared: Default::default() };
         let group = CandidateGroup {
             nodes: vec![inner, outside],
             total: 2,

@@ -37,6 +37,9 @@ pub struct Node {
     pub children: Vec<usize>,
     /// Number of files contained (1 for a file).
     pub items: u64,
+    /// For a pure APFS clone (every block shared with at least one other file): the
+    /// clone id its family shares. 0 for everything else.
+    pub clone: u64,
 }
 
 #[derive(Clone)]
@@ -49,6 +52,65 @@ pub struct Tree {
     /// Lowercased names for keystroke-speed matching, built on first use and
     /// shared by clones (a removal changes links, never names).
     pub index: Arc<std::sync::OnceLock<NameIndex>>,
+    /// Bytes each folder counts more than once because clones inside it share
+    /// blocks (see `Tree::shared`). Built on first use; any change to the tree
+    /// starts a fresh one.
+    pub shared: Arc<std::sync::OnceLock<Shared>>,
+}
+
+/// Per folder, the bytes its total counts more than once: a family of `k` pure
+/// clones of size `s` under one folder costs `s` on disk but adds `k·s` to the
+/// total, so that folder holds `(k-1)·s` shared. Only folders with some sharing
+/// are listed.
+#[derive(Default)]
+pub struct Shared {
+    by_node: HashMap<usize, u64>,
+}
+
+impl Shared {
+    fn build(tree: &Tree) -> Self {
+        // Families of attached pure clones. A detached node (trashed, or replaced by
+        // a re-read) has no way back to the root.
+        let mut families: HashMap<u64, Vec<usize>> = HashMap::new();
+        for (ix, node) in tree.nodes.iter().enumerate() {
+            if node.clone != 0 && node.kind == Kind::File && node.size > 0 && node.parent.is_some() {
+                families.entry(node.clone).or_default().push(ix);
+            }
+        }
+        let attached = |mut ix: usize| loop {
+            match tree.nodes[ix].parent {
+                Some(p) => ix = p,
+                None => return ix == Tree::ROOT,
+            }
+        };
+        let mut by_node: HashMap<usize, u64> = HashMap::new();
+        let mut under: HashMap<usize, u64> = HashMap::new();
+        for members in families.values() {
+            if members.len() < 2 {
+                continue;
+            }
+            let members: Vec<usize> = members.iter().copied().filter(|&m| attached(m)).collect();
+            if members.len() < 2 {
+                continue;
+            }
+            // Pure clones are the same size; take the smallest to never overstate.
+            let size = members.iter().map(|&m| tree.nodes[m].size).min().unwrap_or(0);
+            under.clear();
+            for &m in &members {
+                let mut cur = tree.nodes[m].parent;
+                while let Some(p) = cur {
+                    *under.entry(p).or_default() += 1;
+                    cur = tree.nodes[p].parent;
+                }
+            }
+            for (&folder, &count) in &under {
+                if count > 1 {
+                    *by_node.entry(folder).or_default() += (count - 1) * size;
+                }
+            }
+        }
+        Shared { by_node }
+    }
 }
 
 /// Every node's name lowercased into one buffer, so a substring or suffix
@@ -90,6 +152,32 @@ impl NameIndex {
 
 impl Tree {
     pub const ROOT: usize = 0;
+
+    /// Bytes `ix`'s total counts more than once because pure clones inside it share
+    /// their blocks. 0 for a file and for most folders.
+    pub fn shared(&self, ix: usize) -> u64 {
+        let shared = self.shared.get_or_init(|| Shared::build(self));
+        shared.by_node.get(&ix).copied().unwrap_or(0).min(self.nodes[ix].size)
+    }
+
+    /// What `ix` takes on disk with shared clone blocks counted once. A file is its
+    /// full size: a clone is a whole file of its own.
+    pub fn unique(&self, ix: usize) -> u64 {
+        self.nodes[ix].size - self.shared(ix)
+    }
+
+    /// Mark `ix` as a pure clone in family `id` (after Merge as Clones made it one).
+    pub fn set_clone(&mut self, ix: usize, id: u64) {
+        if self.nodes[ix].kind == Kind::File && self.nodes[ix].clone != id {
+            self.nodes[ix].clone = id;
+            self.forget_shared();
+        }
+    }
+
+    /// Clones whose sharing changed (a removal, a re-read) need the table built again.
+    fn forget_shared(&mut self) {
+        self.shared = Arc::default();
+    }
 
     /// Is this folder an app's, a library's or a tool's own (an Electron app's
     /// node_modules, a photo library's cache)? A familiar name there is not the
@@ -171,6 +259,7 @@ impl Tree {
         let Some(parent) = self.nodes[ix].parent else {
             return;
         };
+        self.forget_shared();
         let (size, items) = (self.nodes[ix].size, self.nodes[ix].items);
         self.nodes[parent].children.retain(|&c| c != ix);
         self.nodes[ix].parent = None;
@@ -218,6 +307,7 @@ impl Tree {
                 parent: node.parent.map(map),
                 children: node.children.iter().map(|&c| map(c)).collect(),
                 items: node.items,
+                clone: node.clone,
             });
         }
         let root = &fresh.nodes[Tree::ROOT];
@@ -239,6 +329,7 @@ impl Tree {
         }
         // New names: the lowercase index is rebuilt on next use.
         self.index = Arc::new(std::sync::OnceLock::new());
+        self.forget_shared();
     }
 }
 
@@ -272,6 +363,8 @@ struct Raw {
     kind: Kind,
     items: u64,
     children: Vec<Raw>,
+    /// A pure clone's family id (see `Node::clone`).
+    clone: u64,
 }
 
 struct Walker<'a> {
@@ -369,7 +462,7 @@ impl Walker<'_> {
         depth: usize,
     ) -> Raw {
         if self.progress.cancelled.load(Ordering::Relaxed) {
-            return Raw { name, size: 0, kind: Kind::Dir, items: 0, children: Vec::new() };
+            return Raw { name, size: 0, kind: Kind::Dir, items: 0, children: Vec::new(), clone: 0 };
         }
         crate::clock::gate();
         if let Ok(mut current) = self.progress.current.try_lock() {
@@ -382,7 +475,9 @@ impl Walker<'_> {
             Some(parent) => parent.open_at(&name).or_else(|_| dirlist::Dir::open(path)),
             None => dirlist::Dir::open(path),
         };
-        let listing = dir.and_then(|dir| dir.list(path, false).map(|listing| (dir, listing)));
+        // With clone reporting: a pure clone's family id is what lets folder totals
+        // count its shared blocks once.
+        let listing = dir.and_then(|dir| dir.list(path, true).map(|listing| (dir, listing)));
         let (dir, entries) = match listing {
             Ok((dir, listing)) => {
                 if listing.errors > 0 {
@@ -416,7 +511,8 @@ impl Walker<'_> {
             }
             files += 1;
             bytes += size;
-            children.push(Raw { name: entry.name, size, kind: Kind::File, items: 1, children: Vec::new() });
+            let clone = if size > 0 { clone_family(entry.sharing) } else { 0 };
+            children.push(Raw { name: entry.name, size, kind: Kind::File, items: 1, children: Vec::new(), clone });
         }
         self.progress.files.fetch_add(files, Ordering::Relaxed);
         self.progress.bytes.fetch_add(bytes, Ordering::Relaxed);
@@ -432,7 +528,7 @@ impl Walker<'_> {
 
         let size = own + children.iter().map(|c| c.size).sum::<u64>();
         let items = children.iter().map(|c| c.items).sum();
-        Raw { name, size, kind: Kind::Dir, items, children }
+        Raw { name, size, kind: Kind::Dir, items, children, clone: 0 }
     }
 
     fn walk_subdir(
@@ -462,7 +558,7 @@ impl Walker<'_> {
             if let Some(own) = &own_live {
                 own.done.store(true, Ordering::Release);
             }
-            return Some(Raw { name: entry.name, size: entry.size, kind: Kind::Dir, items: 0, children: Vec::new() });
+            return Some(Raw { name: entry.name, size: entry.size, kind: Kind::Dir, items: 0, children: Vec::new(), clone: 0 });
         }
         let raw = self.walk_dir(dir, &path, entry.name, entry.size, live, depth);
         if let Some(own) = &own_live {
@@ -515,7 +611,9 @@ pub fn volume_items(mount: &Path) -> Option<u64> {
 /// and whatever the Data volume holds beyond what could be read becomes "Not readable",
 /// so the total matches what Finder reports as used.
 fn add_volume_slices(tree: &mut Tree, layout: &DiskLayout) {
-    let scanned = tree.nodes[Tree::ROOT].size;
+    // Clone blocks count once here, or a disk full of clones would read as fully
+    // explained (and the unreadable part as nothing).
+    let scanned = tree.unique(Tree::ROOT);
     let unreadable = layout.data_used.saturating_sub(scanned);
     let slices = layout
         .extras
@@ -525,7 +623,7 @@ fn add_volume_slices(tree: &mut Tree, layout: &DiskLayout) {
     let mut added = 0;
     for (name, size) in slices {
         let ix = tree.nodes.len();
-        tree.nodes.push(Node { name: name.into(), size, kind: Kind::Other, parent: Some(Tree::ROOT), children: Vec::new(), items: 0 });
+        tree.nodes.push(Node { name: name.into(), size, kind: Kind::Other, parent: Some(Tree::ROOT), children: Vec::new(), items: 0, clone: 0 });
         tree.nodes[Tree::ROOT].children.push(ix);
         added += size;
     }
@@ -632,13 +730,17 @@ fn scan_with_bases(root: &Path, progress: &Progress, bases: &findings::Bases, sk
     if std::env::var_os("BROOM_PHASES").is_some() {
         eprintln!("  walk {:.3}s  flatten {:.3}s", (flatten_start - walk_start).as_secs_f64(), flatten_start.elapsed().as_secs_f64());
     }
-    Tree {
+    let tree = Tree {
         root_path: root.to_path_buf(),
         nodes,
         errors: progress.errors.load(Ordering::Relaxed),
         cloud_only: progress.cloud_only.load(Ordering::Relaxed),
         index: Default::default(),
-    }
+        shared: Default::default(),
+    };
+    // Built here, off the UI thread, rather than on the first frame that asks.
+    tree.shared(Tree::ROOT);
+    tree
 }
 
 /// What deleting these paths would actually free, walking them with APFS clone reporting
@@ -707,6 +809,11 @@ pub fn frees_of(paths: &[PathBuf]) -> u64 {
     tally.freed.into_inner()
         + families.values().filter(|(found, refs, _)| found >= refs).map(|f| f.2).sum::<u64>()
         + links.values().filter(|(found, total, _)| found >= total).map(|l| l.2).sum::<u64>()
+}
+
+/// A file's clone family id when it is a pure clone with company, else 0.
+fn clone_family(sharing: Option<dirlist::Sharing>) -> u64 {
+    sharing.filter(|s| s.all && s.refs > 1).map(|s| s.clone_id).unwrap_or(0)
 }
 
 /// Levels listed breadth-first before the main walk, so the chart can name them at once.
@@ -826,6 +933,7 @@ fn flatten(raw: Raw, parent: Option<usize>, nodes: &mut Vec<Node>) -> usize {
         parent,
         children: Vec::with_capacity(raw.children.len()),
         items: raw.items,
+        clone: raw.clone,
     });
     for child in raw.children {
         let child_ix = flatten(child, Some(ix), nodes);
@@ -1314,6 +1422,72 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A synthetic tree: root/{a/{x1, y}, b/{x2, x3}, c/z1, d/z2(detached)} where the
+    /// x files are one clone family and the z files another.
+    fn clone_tree() -> Tree {
+        let node = |name: &str, size: u64, kind: Kind, parent: Option<usize>, children: Vec<usize>, clone: u64| Node {
+            name: name.into(),
+            size,
+            kind,
+            parent,
+            children,
+            items: if kind == Kind::File { 1 } else { 0 },
+            clone,
+        };
+        let nodes = vec![
+            node("root", 410, Kind::Dir, None, vec![1, 4, 7], 0),
+            node("a", 150, Kind::Dir, Some(0), vec![2, 3], 0),
+            node("x1", 100, Kind::File, Some(1), vec![], 7),
+            node("y", 50, Kind::File, Some(1), vec![], 0),
+            node("b", 200, Kind::Dir, Some(0), vec![5, 6], 0),
+            node("x2", 100, Kind::File, Some(4), vec![], 7),
+            node("x3", 100, Kind::File, Some(4), vec![], 7),
+            node("c", 60, Kind::Dir, Some(0), vec![8], 0),
+            node("z1", 60, Kind::File, Some(7), vec![], 9),
+            // Trashed: its family has one attached member left, so nothing is shared.
+            node("z2", 60, Kind::File, None, vec![], 9),
+        ];
+        Tree { root_path: PathBuf::from("/t"), nodes, errors: 0, cloud_only: 0, index: Default::default(), shared: Default::default() }
+    }
+
+    #[test]
+    fn clone_blocks_count_once_per_folder() {
+        let tree = clone_tree();
+        // b holds two of the family: one is free.
+        assert_eq!((tree.shared(4), tree.unique(4)), (100, 100));
+        // a holds one: nothing shared inside it.
+        assert_eq!((tree.shared(1), tree.unique(1)), (0, 150));
+        // The root holds three: 100 bytes on disk, 300 counted.
+        assert_eq!((tree.shared(0), tree.unique(0)), (200, 210));
+        // A clone itself is a whole file.
+        assert_eq!(tree.unique(2), 100);
+        // The z family lost its other member.
+        assert_eq!(tree.shared(7), 0);
+    }
+
+    #[test]
+    fn removing_a_clone_updates_sharing() {
+        let mut tree = clone_tree();
+        assert_eq!(tree.shared(0), 200);
+        tree.remove(6);
+        assert_eq!((tree.shared(4), tree.unique(4)), (0, 100));
+        assert_eq!((tree.shared(0), tree.unique(0)), (100, 210));
+    }
+
+    #[test]
+    fn a_merge_shrinks_the_folder_total() {
+        let mut tree = clone_tree();
+        // y and z1 become clones of each other (as Merge as Clones would leave them).
+        tree.nodes[3].size = 60;
+        tree.nodes[1].size = 160;
+        tree.nodes[0].size = 420;
+        let before = tree.unique(0);
+        tree.set_clone(3, 11);
+        tree.set_clone(8, 11);
+        assert_eq!(tree.unique(0), before - 60);
+        assert_eq!(tree.unique(1), 160);
+    }
+
     #[test]
     fn formats_sizes() {
         assert_eq!(format_size(512), "512 bytes");
@@ -1382,7 +1556,16 @@ mod tests {
         let counted = tree.nodes[Tree::ROOT].size;
         // Sizes are allocation (like Finder): each clone counts its blocks. "Frees" is what
         // must match reality, checked below.
-        eprintln!("truth {:.1} MB, allocated (sizes shown) {:.1} MB", mb(truth), mb(counted));
+        let unique = tree.unique(Tree::ROOT);
+        eprintln!("truth {:.1} MB, allocated (sizes shown) {:.1} MB, clone blocks once {:.1} MB", mb(truth), mb(counted), mb(unique));
+        // Pure clones count once. The edited clone still shares 36 MB with the
+        // family, which a pure-clone family id can't see; that is the only gap left.
+        let tolerance = 2 << 20;
+        assert!(unique + tolerance >= truth, "counted {unique} below truth {truth}");
+        assert!(unique <= truth + (36 << 20) + tolerance, "counted {unique}, truth {truth}");
+        // b/ holds three pure clones: one file on disk.
+        let b = tree.find(&mount.join("b")).unwrap();
+        assert!(tree.unique(b).abs_diff(40 << 20) <= tolerance, "b/ counted {}", tree.unique(b));
 
         // Predict, delete, measure; one folder at a time, rescanning in between.
         // e/ first: its file has another link in f/, so deleting e/ frees nothing yet.

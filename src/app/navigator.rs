@@ -267,9 +267,15 @@ impl Broom {
                     .child(div().min_w_0().text_lg().font_family(theme::current().display).font_weight(FontWeight::SEMIBOLD).truncate().child(focus.name.clone()))
                     .child(div().text_color(rgb(colors().muted)).child(format!(
                         "{} · {} files",
-                        format_size(focus.size),
+                        format_size(r.tree.unique(r.focus)),
                         format_count(focus.items)
                     )))
+                    .when(r.tree.shared(r.focus) > 0, |d| {
+                        d.child(div().text_xs().text_color(rgb(colors().muted)).child(format!(
+                            "+{} more is shared by clones, counted once",
+                            format_size(r.tree.shared(r.focus))
+                        )))
+                    })
                     .when_some(r.growth_since.filter(|_| r.growth.contains_key(&r.focus)), |d, since| {
                         let delta = r.growth[&r.focus];
                         let when = match format_age(since).as_str() {
@@ -351,6 +357,16 @@ impl Broom {
                 let path = r.tree.path_of(ix);
                 let tick = r.tick(ix);
                 let stageable = r.stageable(ix);
+                // Folders count clone blocks once; a clone itself is a whole file.
+                let shared = r.tree.shared(ix);
+                let shown_size = node.size - shared;
+                let share_note = if shared > 0 {
+                    Some(format!("+{} shared", format_size(shared)))
+                } else if node.kind == Kind::File && node.clone != 0 {
+                    Some("clone".to_string())
+                } else {
+                    None
+                };
                 let tint = gpui::hsla(swatch.hue.into_positive_degrees() / 360.0, swatch.saturation, 0.45, 0.16);
 
                 div()
@@ -459,6 +475,20 @@ impl Broom {
                                 }),
                         )
                     })
+                    .when_some(share_note, |d, note| {
+                        d.child(
+                            div()
+                                .flex_none()
+                                .px_1()
+                                .rounded(theme::radius(4.))
+                                .border_1()
+                                .border_color(theme::alpha(colors().review, 0.45))
+                                .text_color(rgb(colors().review))
+                                .text_xs()
+                                .font_family(theme::current().mono)
+                                .child(note),
+                        )
+                    })
                     .when(columns.modified, |d| d.child(date_cell(r.mtimes.get(&ix).copied().flatten())))
                     .when(columns.created, |d| d.child(date_cell(r.ctimes.get(&ix).copied().flatten())))
                     .child(
@@ -469,7 +499,7 @@ impl Broom {
                             .text_color(rgb(colors().muted))
                             .text_xs()
                             .font_family(theme::current().mono)
-                            .child(format_size(node.size)),
+                            .child(format_size(shown_size)),
                     )
                     .child(
                         div()

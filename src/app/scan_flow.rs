@@ -583,7 +583,7 @@ impl Broom {
             // Re-lay out the current snapshot straight away rather than waiting for the next one.
             if let Some(view) = scanning.live.take() {
                 let mut view = Rc::try_unwrap(view).unwrap_or_else(|rc| LiveView {
-                    tree: Tree { root_path: rc.tree.root_path.clone(), nodes: rc.tree.nodes.clone(), errors: 0, cloud_only: 0, index: Default::default() },
+                    tree: Tree { root_path: rc.tree.root_path.clone(), nodes: rc.tree.nodes.clone(), errors: 0, cloud_only: 0, index: Default::default(), shared: Default::default() },
                     done: rc.done.clone(),
                     focus: rc.focus,
                     segments: rc.segments.clone(),

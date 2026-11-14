@@ -28,6 +28,9 @@ pub(super) struct Merged {
     pub(super) locked: usize,
     pub(super) protected: usize,
     pub(super) failed: Vec<String>,
+    /// Each merged file and the clone family it now shares, so the tree can
+    /// count the pair's blocks once.
+    pub(super) clones: Vec<(PathBuf, u64)>,
 }
 
 impl Merged {
@@ -130,7 +133,16 @@ impl Broom {
                 .background_spawn(async move {
                     let mut merged = Merged::default();
                     for pair in &pairs {
-                        merged.tally(pair, duplicates::merge(pair));
+                        let outcome = duplicates::merge(pair);
+                        if outcome.is_ok() {
+                            for path in [&pair.keep, &pair.extra] {
+                                let id = crate::dirlist::file_sharing(path).filter(|s| s.all && s.refs > 1).map(|s| s.clone_id);
+                                if let Some(id) = id {
+                                    merged.clones.push((path.clone(), id));
+                                }
+                            }
+                        }
+                        merged.tally(pair, outcome);
                         done.fetch_add(1, Ordering::Relaxed);
                     }
                     (merged, scan::volumes())
@@ -166,6 +178,13 @@ impl Broom {
             r.findings.retain(|f| f.title != DUPLICATES || !f.nodes.is_empty());
             r.dupe_pairs.retain(|p| !gone.contains(&p.extra));
             r.collector.retain(|ix| !nodes.contains(ix));
+            // Both copies are clones now: folder totals count their blocks once.
+            let tree = Arc::make_mut(&mut r.tree);
+            for (path, id) in &merged.clones {
+                if let Some(ix) = tree.find(path) {
+                    tree.set_clone(ix, *id);
+                }
+            }
         }
         self.collector_changed(cx);
         self.show_banner(Some(merged.banner()), cx);

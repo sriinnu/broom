@@ -22,15 +22,19 @@ pub(super) struct SpaceState {
 impl Broom {
     /// The tree on screen, if it's a whole-disk scan: bytes read and folders
     /// that couldn't be.
-    fn whole_disk_scan(&mut self) -> (Option<u64>, u64) {
-        let Some(r) = self.results() else { return (None, 0) };
+    /// What the whole-disk scan on screen read (clone blocks counted once), what
+    /// clones share inside that, and how many folders it couldn't read.
+    fn whole_disk_scan(&mut self) -> (Option<u64>, u64, u64) {
+        let Some(r) = self.results() else { return (None, 0, 0) };
         let root = &r.tree.nodes[Tree::ROOT];
         let whole = root.children.iter().any(|&c| r.tree.nodes[c].kind == Kind::Other && r.tree.nodes[c].name.as_ref() == "macOS");
         if !whole {
-            return (None, 0);
+            return (None, 0, 0);
         }
         let read: u64 = root.children.iter().filter(|&&c| r.tree.nodes[c].kind != Kind::Other).map(|&c| r.tree.nodes[c].size).sum();
-        (Some(read), r.tree.errors)
+        // The volume slices share nothing, so the root's sharing is all in what was read.
+        let shared = r.tree.shared(Tree::ROOT).min(read);
+        (Some(read - shared), shared, r.tree.errors)
     }
 
     /// View › Where Is My Space…, or the link under the startup disk.
@@ -49,10 +53,12 @@ impl Broom {
     /// Measure off the UI thread; `before`, when set, is the free space before
     /// an action, so the note can say what the action really gained.
     fn measure_space(&mut self, before: Option<(u64, String)>, cx: &mut Context<Self>) {
-        let (scanned, unreadable) = self.whole_disk_scan();
+        let (scanned, shared, unreadable) = self.whole_disk_scan();
         let name = self.volumes.first().map(|v| v.name.clone()).unwrap_or_else(|| "Startup Disk".into());
         cx.spawn(async move |this, cx| {
-            let inputs = cx.background_spawn(async move { space::gather(name, scanned, unreadable) }).await;
+            let inputs = cx
+                .background_spawn(async move { space::gather(name, scanned, unreadable).map(|i| space::Inputs { shared, ..i }) })
+                .await;
             this.update(cx, |this, cx| {
                 if let Some(state) = &mut this.space {
                     if let (Some((free_before, what)), Some(now)) = (&before, &inputs) {
@@ -170,6 +176,7 @@ impl Broom {
                     .flex_col()
                     .when(line.depth == 1, |d| d.pl_4())
                     .when(line.depth == 2, |d| d.pl_8())
+                    .when(line.depth == 3, |d| d.pl_12())
                     .when(line.depth == 0, |d| d.pt_1())
                     .child(
                         div()
@@ -182,7 +189,7 @@ impl Broom {
                                     .min_w_0()
                                     .truncate()
                                     .when(line.depth == 0, |d| d.font_weight(FontWeight::SEMIBOLD))
-                                    .when(line.depth == 2, |d| d.text_xs().text_color(rgb(colors().muted)))
+                                    .when(line.depth >= 2, |d| d.text_xs().text_color(rgb(colors().muted)))
                                     .child(line.label),
                             )
                             .child(div().flex_none().text_xs().text_color(rgb(how_color)).child(line.how.label()))

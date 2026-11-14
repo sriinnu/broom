@@ -425,7 +425,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn node(name: &str, size: u64, kind: Kind, parent: Option<usize>, children: Vec<usize>) -> Node {
-        Node { name: name.into(), size, kind, parent, children, items: 0 }
+        Node { name: name.into(), size, kind, parent, children, items: 0, clone: 0 }
     }
 
     /// A large slice pinned after many thin ones (like "Not scanned yet") must keep its
@@ -441,7 +441,7 @@ mod tests {
             total += size;
         }
         nodes[0].size = total;
-        let tree = Tree { root_path: PathBuf::from("/"), nodes, errors: 0, cloud_only: 0, index: Default::default() };
+        let tree = Tree { root_path: PathBuf::from("/"), nodes, errors: 0, cloud_only: 0, index: Default::default(), shared: Default::default() };
         let segments = layout(&tree, Tree::ROOT);
         let targets: Vec<Target> = segments.iter().map(|s| s.target).collect();
         assert!(targets.contains(&Target::Node(5)), "the large last slice has its own segment: {targets:?}");

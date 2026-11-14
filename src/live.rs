@@ -74,14 +74,14 @@ pub fn snapshot(live: &LiveNode, root_path: &Path, layout: Option<&DiskLayout>) 
             let ix = nodes.len();
             // The volume slices are exact from the start; the remainder obviously isn't.
             done.push(name != disk::NOT_SCANNED);
-            nodes.push(Node { name: name.into(), size, kind: Kind::Other, parent: Some(Tree::ROOT), children: Vec::new(), items: 0 });
+            nodes.push(Node { name: name.into(), size, kind: Kind::Other, parent: Some(Tree::ROOT), children: Vec::new(), items: 0, clone: 0 });
             nodes[Tree::ROOT].children.push(ix);
             nodes[Tree::ROOT].size += size;
         }
         nodes[Tree::ROOT].name = layout.name.clone().into();
         scan::sort_children(&mut nodes, Tree::ROOT);
     }
-    LiveSnapshot { tree: Tree { root_path: root_path.to_path_buf(), nodes, errors: 0, cloud_only: 0, index: Default::default() }, done }
+    LiveSnapshot { tree: Tree { root_path: root_path.to_path_buf(), nodes, errors: 0, cloud_only: 0, index: Default::default(), shared: Default::default() }, done }
 }
 
 /// The live totals as a tree, plus which folders are final (indexed like `tree.nodes`).
@@ -100,6 +100,7 @@ fn add(live: &LiveNode, name: String, parent: Option<usize>, nodes: &mut Vec<Nod
         parent,
         children: Vec::new(),
         items: 0,
+        clone: 0,
     });
     let kids: Vec<Arc<LiveNode>> = live.children.lock().unwrap().list.clone();
     let mut size = live.bytes.load(Ordering::Relaxed);
