@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased (0.7.0)
+
+**New**
+- **Clone-aware totals.** Folder totals count blocks that APFS clones share once, so a whole-disk scan adds up to what the disk holds instead of reading above its size. A clone still shows its full size, with a *clone* tag. A folder holding clones shows *+X shared*, and its slice in the chart is hatched by that much.
+- **Merge as Clones shows its saving.** The folder totals drop by what the banner says was freed.
+- **Where is my space?** gets a *Shared by clones* line, inside *Files Broom read* (not added again).
+
+**Known limit:** a clone that was edited after copying still shares some blocks; those are counted once per file.
+
 ## 0.6.1 (2026-11-14)
 
 **Fixed**

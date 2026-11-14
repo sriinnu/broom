@@ -7,7 +7,8 @@
 //! ```text
 //! "BROOMTRE" u32 version
 //! header   varints and strings (see `Meta`)
-//! nodes    varint count, then in preorder: tag byte (kind), name id, size,
+//! nodes    varint count, then in preorder: tag byte (kind; 3 = a file that is a
+//!          pure clone), name id, size, [clone id] for clones,
 //!          [items, child count] for folders, parent distance
 //! names    varint count, then each distinct name once (len + UTF-8)
 //! trailer  u64 offset of the names, u64 node count, "BROOMEND"
@@ -38,7 +39,7 @@ use crate::scan::{Kind, Node, Tree};
 const MAGIC: &[u8; 8] = b"BROOMTRE";
 const END: &[u8; 8] = b"BROOMEND";
 /// Bumped whenever the layout changes; an older file then reads as no cache.
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 /// Trees kept at most. A home folder's is ~150 MB and this is a disk-space app,
 /// so only the few most recently written stay.
 const KEEP: usize = 4;
@@ -187,6 +188,7 @@ fn write(path: &Path, meta: &Meta, tree: &Tree) -> io::Result<u64> {
         buf.clear();
         buf.push(match node.kind {
             Kind::Dir => 0,
+            Kind::File if node.clone != 0 => 3,
             Kind::File => 1,
             Kind::Other => 2,
         });
@@ -196,6 +198,9 @@ fn write(path: &Path, meta: &Meta, tree: &Tree) -> io::Result<u64> {
         });
         put(&mut buf, id);
         put(&mut buf, node.size);
+        if node.kind == Kind::File && node.clone != 0 {
+            put(&mut buf, node.clone);
+        }
         if node.kind != Kind::File {
             put(&mut buf, node.items);
             put(&mut buf, node.children.len() as u64);
@@ -260,14 +265,16 @@ fn parse(bytes: &[u8]) -> Option<(Meta, Tree)> {
     // How many children each folder said it has, to check against what arrived.
     let mut expected: Vec<u32> = Vec::with_capacity(count);
     for ix in 0..count {
-        let kind = match reader.byte()? {
+        let tag = reader.byte()?;
+        let kind = match tag {
             0 => Kind::Dir,
-            1 => Kind::File,
+            1 | 3 => Kind::File,
             2 => Kind::Other,
             _ => return None,
         };
         let name = names.get(reader.varint()? as usize)?.clone();
         let size = reader.varint()?;
+        let clone = if tag == 3 { reader.varint()? } else { 0 };
         let (items, children) = if kind == Kind::File { (1, 0) } else { (reader.varint()?, reader.varint()? as usize) };
         let parent = if ix == 0 {
             None
@@ -283,12 +290,14 @@ fn parse(bytes: &[u8]) -> Option<(Meta, Tree)> {
             nodes[p].children.push(ix);
         }
         expected.push(children.min(u32::MAX as usize) as u32);
-        nodes.push(Node { name, size, kind, parent, children: Vec::with_capacity(children.min(count)), items });
+        nodes.push(Node { name, size, kind, parent, children: Vec::with_capacity(children.min(count)), items, clone });
     }
     if reader.at != names_at || nodes.iter().zip(&expected).any(|(n, &e)| n.children.len() as u32 != e) {
         return None;
     }
-    Some((meta, Tree { root_path, nodes, errors, cloud_only, index: Arc::default() }))
+    let tree = Tree { root_path, nodes, errors, cloud_only, index: Arc::default(), shared: Arc::default() };
+    tree.shared(Tree::ROOT);
+    Some((meta, tree))
 }
 
 #[allow(clippy::type_complexity)]
@@ -412,6 +421,7 @@ mod tests {
             parent,
             children,
             items,
+            clone: 0,
         };
         Tree {
             root_path: PathBuf::from("/x"),
@@ -427,6 +437,7 @@ mod tests {
             errors: 3,
             cloud_only: 1,
             index: Arc::default(),
+            shared: Arc::default(),
         }
     }
 

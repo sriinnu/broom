@@ -166,7 +166,13 @@ impl Broom {
                     Some(category) if r.color_by == ColorBy::Kind && node.kind != Kind::Other => format!("\n{}", category.label()),
                     _ => String::new(),
                 };
-                (node.name.clone(), format!("{}\n{detail}{kind}", format_size(node.size)))
+                let shared = tree.shared(ix);
+                let size = match node.kind {
+                    _ if shared > 0 => format!("{}\n+{} shared by clones", format_size(node.size - shared), format_size(shared)),
+                    Kind::File if node.clone != 0 => format!("{} · a clone", format_size(node.size)),
+                    _ => format_size(node.size),
+                };
+                (node.name.clone(), format!("{size}\n{detail}{kind}"))
             }
             Some(Target::Small { parent }) => {
                 let seg_size: u64 = tree.nodes[parent]
@@ -180,7 +186,9 @@ impl Broom {
             None if center_hovered => ("↑ Back".into(), format!("to “{}”", tree.nodes[tree.nodes[r.focus].parent.unwrap()].name)),
             None => {
                 let node = &tree.nodes[r.focus];
-                (node.name.clone(), format_size(node.size))
+                let shared = tree.shared(r.focus);
+                let size = if shared > 0 { format!("{}\n+{} shared by clones", format_size(node.size - shared), format_size(shared)) } else { format_size(node.size) };
+                (node.name.clone(), size)
             }
         };
         let label_width = r
@@ -206,6 +214,19 @@ impl Broom {
                 Target::Small { parent } => r.is_staged(parent),
             })
             .collect();
+        // A folder's arc is its full size; the part that clones share (counted once on
+        // disk) gets a light hatch at the arc's end, so the ring keeps its geometry and
+        // still says how much of it isn't extra space.
+        let shared: Vec<f32> = segments
+            .iter()
+            .map(|s| match s.target {
+                Target::Node(ix) if s.kind == Kind::Dir && tree.nodes[ix].size > 0 => {
+                    tree.shared(ix) as f32 / tree.nodes[ix].size as f32
+                }
+                _ => 0.0,
+            })
+            .collect();
+        let shared_hatch = theme::alpha(colors().text, 0.32);
         // Names for the two inner rings; whether one fits is decided at paint time.
         let labels: Vec<(usize, SharedString)> = segments
             .iter()
@@ -235,11 +256,15 @@ impl Broom {
                         }
 
                         geometry.paint_disc(window, geometry.outer_radius() + 6.0, to_hsla(colors().chart_surface));
-                        for ((segment, color), &hatched) in segments.iter().zip(&fills).zip(&staged) {
+                        for (((segment, color), &hatched), &shared) in segments.iter().zip(&fills).zip(&staged).zip(&shared) {
                             if segment.depth as f32 > 1.0 + eased * sunburst::MAX_DEPTH as f32 {
                                 continue;
                             }
                             geometry.paint_sector(window, segment.depth, segment.start * eased, segment.end * eased, *color);
+                            if shared > 0.005 {
+                                let from = segment.end - (segment.end - segment.start) * shared;
+                                geometry.paint_hatched_sector(window, segment.depth, from * eased, segment.end * eased, shared_hatch);
+                            }
                             if hatched {
                                 geometry.paint_hatched_sector(window, segment.depth, segment.start * eased, segment.end * eased, gpui::hsla(0., 0., 0.05, 0.55));
                             }
@@ -343,7 +368,7 @@ impl Broom {
             .when(r.banner.is_some(), |d| {
                 // The "done" moment: what the scan found, in one line — or, after
                 // a move to the Trash, what moved.
-                let total = tree.nodes[Tree::ROOT].size;
+                let total = tree.unique(Tree::ROOT);
                 let pending = r.findings.iter().any(|f| f.pending);
                 let safe: u64 = r.findings.iter().filter(|f| f.safety == Safety::Safe).map(|f| f.size).sum();
                 let savings = if pending {

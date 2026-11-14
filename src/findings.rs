@@ -546,6 +546,7 @@ mod tests {
             parent,
             children: Vec::new(),
             items: 0,
+            clone: 0,
         };
         let mut nodes = vec![node("root", 1500, None)];
         for (name, size) in [("a", 1000), ("b", 500)] {
@@ -553,7 +554,7 @@ mod tests {
             nodes.push(node(name, size, Some(0)));
             nodes[0].children.push(ix);
         }
-        let mut tree = Tree { root_path: PathBuf::from("/t"), nodes, errors: 0, cloud_only: 0, index: Default::default() };
+        let mut tree = Tree { root_path: PathBuf::from("/t"), nodes, errors: 0, cloud_only: 0, index: Default::default(), shared: Default::default() };
         let finding = |title: &'static str, target: usize, size: u64| Finding {
             id: next_id(),
             title,
