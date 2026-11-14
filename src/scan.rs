@@ -563,6 +563,16 @@ pub fn sort_children(nodes: &mut [Node], ix: usize) {
     nodes[ix].children = children;
 }
 
+/// Scans leave two cores free: rayon gets two threads fewer than the Mac has
+/// cores, so a whole-disk scan never pins the machine. (Lowering the threads'
+/// QoS was tried and dropped: macOS then throttles their disk reads too, and on a
+/// busy Mac a scan took 4 to 25 times longer.) Call once, before the first scan.
+pub fn init_pool() {
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let threads = cores.saturating_sub(2).max(2);
+    let _ = rayon::ThreadPoolBuilder::new().num_threads(threads).build_global();
+}
+
 /// The startup disk's name as Finder shows it.
 pub fn startup_disk_name() -> String {
     fs::read_dir("/Volumes")
