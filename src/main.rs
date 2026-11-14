@@ -44,6 +44,7 @@ use app::{
 
 fn main() {
     let _ = app::LAUNCHED.set(std::time::Instant::now());
+    scan::init_pool();
     let args: Vec<String> = std::env::args().collect();
     // Headless subcommands for scripts and agents: `broom scan|find|clean|trash|help`.
     if let Some(code) = cli::run(&args) {
