@@ -105,7 +105,10 @@ impl Shared {
             }
             for (&folder, &count) in &under {
                 if count > 1 {
-                    *by_node.entry(folder).or_default() += (count - 1) * size;
+                    // Saturating: a huge family of huge files must cap, never wrap.
+                    let extra = (count - 1).saturating_mul(size);
+                    let total = by_node.entry(folder).or_default();
+                    *total = total.saturating_add(extra);
                 }
             }
         }
@@ -1463,6 +1466,19 @@ mod tests {
         assert_eq!(tree.unique(2), 100);
         // The z family lost its other member.
         assert_eq!(tree.shared(7), 0);
+    }
+
+    #[test]
+    fn huge_clone_families_cap_instead_of_wrapping() {
+        let mut tree = clone_tree();
+        for ix in [2, 5, 6] {
+            tree.nodes[ix].size = u64::MAX / 2 + 1;
+        }
+        tree.nodes[4].size = u64::MAX;
+        tree.nodes[0].size = u64::MAX;
+        // Two extra copies of u64::MAX / 2 + 1 under the root overflow a u64.
+        assert_eq!(tree.shared(0), u64::MAX);
+        assert_eq!(tree.unique(0), 0);
     }
 
     #[test]
