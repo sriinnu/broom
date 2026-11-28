@@ -97,6 +97,10 @@ impl Broom {
             cx.notify();
             return;
         }
+        if self.clone_picker.is_some() {
+            self.close_clone_picker(window, cx);
+            return;
+        }
         self.close_modal(window, cx);
     }
 
@@ -117,6 +121,7 @@ impl Broom {
                 },
                 self.render_panel(p, cx).into_any_element(),
             ),
+            (None, None) if self.clone_picker.is_some() => ("ClonePeers", self.render_clone_picker(cx)),
             (None, None) => return None,
         };
         Some(
@@ -139,6 +144,18 @@ impl Broom {
                             .id("modal-card")
                             .key_context(context)
                             .track_focus(&self.modal_focus)
+                            .when(context == "ClonePeers", |card| card
+                                .on_action(cx.listener(|this, _: &CloseClonePeers, window, cx| this.close_clone_picker(window, cx)))
+                                .on_action(cx.listener(|this, _: &SelectNext, _, cx| this.move_clone_cursor(1, cx)))
+                                .on_action(cx.listener(|this, _: &SelectPrev, _, cx| this.move_clone_cursor(-1, cx)))
+                                .on_action(cx.listener(|this, _: &ToggleStaged, _, cx| this.choose_active_clone(false, cx)))
+                                .on_action(cx.listener(|this, _: &KeepClone, _, cx| this.choose_active_clone(true, cx)))
+                                .on_action(cx.listener(|this, _: &OpenSelected, window, cx| {
+                                    if let Some(picker) = &this.clone_picker {
+                                        this.show_clone_file(picker.rows[picker.cursor], window, cx);
+                                    }
+                                }))
+                                .on_action(cx.listener(|this, _: &StageCloneChoices, window, cx| this.stage_clone_choices(window, cx))))
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .child(card),
                     ),
@@ -383,12 +400,168 @@ impl Broom {
             )
     }
 
+    pub(super) fn open_clone_peers(&mut self, current: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(r) = self.results() else { return };
+        let mut rows = r.tree.clone_copies(current).to_vec();
+        if rows.len() < 2 {
+            return;
+        }
+        rows.sort_by_cached_key(|&ix| r.tree.path_of(ix));
+        let cursor = rows.iter().position(|&ix| ix == current).unwrap_or(0);
+        self.clone_picker = Some(ClonePicker {
+            scan_id: r.scan_id, current, keeper: current, rows, cursor, marked: HashSet::new(), scroll: ScrollHandle::new(),
+        });
+        self.context_menu = None;
+        window.focus(&self.modal_focus, cx);
+        cx.notify();
+    }
+
+    fn close_clone_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.clone_picker = None;
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
+    }
+
+    fn move_clone_cursor(&mut self, step: isize, cx: &mut Context<Self>) {
+        if let Some(picker) = &mut self.clone_picker {
+            picker.cursor = picker.cursor.saturating_add_signed(step).min(picker.rows.len() - 1);
+            picker.scroll.scroll_to_item(picker.cursor);
+            cx.notify();
+        }
+    }
+
+    fn choose_active_clone(&mut self, keep: bool, cx: &mut Context<Self>) {
+        if let Some(picker) = &self.clone_picker {
+            self.choose_clone(picker.rows[picker.cursor], keep, cx);
+        }
+    }
+
+    fn choose_clone(&mut self, ix: usize, keep: bool, cx: &mut Context<Self>) {
+        let Some(picker) = &mut self.clone_picker else { return };
+        let Screen::Results(r) = &self.screen else { return };
+        if picker.scan_id != r.scan_id || !r.tree.clone_copies(picker.current).contains(&ix) {
+            return;
+        }
+        if keep {
+            picker.keeper = ix;
+            picker.marked.remove(&ix);
+        } else if ix != picker.keeper && r.stageable(ix) && !r.is_staged(ix) && !picker.marked.remove(&ix) {
+            picker.marked.insert(ix);
+        }
+        cx.notify();
+    }
+
+    fn show_clone_file(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(picker) = &self.clone_picker else { return };
+        let Screen::Results(r) = &mut self.screen else { return };
+        if picker.scan_id != r.scan_id || !r.tree.clone_copies(picker.current).contains(&ix) {
+            return;
+        }
+        if let Some(parent) = r.tree.nodes[ix].parent {
+            r.navigate(parent);
+            r.pick(ix, false, false);
+            if let Some(position) = r.order.iter().position(|&node| node == ix) {
+                r.list_scroll.scroll_to_item(position, ScrollStrategy::Nearest);
+            }
+            self.close_clone_picker(window, cx);
+        }
+    }
+
+    fn stage_clone_choices(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(picker) = &self.clone_picker else { return };
+        let Screen::Results(r) = &mut self.screen else { return };
+        let copies: HashSet<_> = r.tree.clone_copies(picker.current).iter().copied().collect();
+        if picker.scan_id != r.scan_id || !copies.contains(&picker.keeper) || r.is_staged(picker.keeper) {
+            return;
+        }
+        let rows: Vec<_> = picker.rows.iter().copied()
+            .filter(|ix| *ix != picker.keeper && picker.marked.contains(ix) && copies.contains(ix) && r.stageable(*ix))
+            .collect();
+        if rows.is_empty() {
+            return;
+        }
+        r.stage_rows(&rows);
+        self.close_clone_picker(window, cx);
+        self.collector_changed(cx);
+    }
+
+    fn render_clone_picker(&self, cx: &mut Context<Self>) -> AnyElement {
+        let (Some(picker), Screen::Results(r)) = (&self.clone_picker, &self.screen) else {
+            return div().into_any_element();
+        };
+        let copies: HashSet<_> = r.tree.clone_copies(picker.current).iter().copied().collect();
+        let current_family = r.scan_id == picker.scan_id && copies.contains(&picker.keeper);
+        let keeper_staged = current_family && r.is_staged(picker.keeper);
+        let mut marked = 0;
+        let mut rows = div().id("clone-peers-list").track_scroll(&picker.scroll).max_h(px(330.)).overflow_y_scroll().flex().flex_col();
+        if current_family {
+            for (row, &ix) in picker.rows.iter().enumerate().filter(|(_, ix)| copies.contains(ix)) {
+                let path = r.tree.path_of(ix);
+                let filename = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().into_owned();
+                let parent = path.parent().unwrap_or(&r.tree.root_path);
+                let relative = parent.strip_prefix(&r.tree.root_path).unwrap_or(parent);
+                let folder = if relative.as_os_str().is_empty() { "Scan root".into() } else { relative.to_string_lossy().into_owned() };
+                let keeper = ix == picker.keeper;
+                let queued = r.is_staged(ix);
+                let selectable = !keeper && !queued && r.stageable(ix);
+                let selected = selectable && picker.marked.contains(&ix);
+                marked += usize::from(selected);
+                rows = rows.child(path_tip(
+                    div().id(("clone-peer", ix)).flex().items_center().gap_2().px_2().py_2().rounded(theme::radius(6.))
+                        .when(row == picker.cursor, |row| row.bg(rgb(colors().card_hover)))
+                        .child(div().min_w_0().flex_1()
+                            .child(div().truncate().child(filename))
+                            .child(div().truncate().text_xs().text_color(rgb(colors().muted))
+                                .child(if ix == picker.current { format!("{folder} · Current item") } else { folder })))
+                        .child(if keeper {
+                            div().text_xs().text_color(rgb(colors().safe)).child("Keeper").into_any_element()
+                        } else {
+                            button(("clone-keep", ix), "Keep").flex_none().text_xs()
+                                .on_click(cx.listener(move |this, _, _, cx| this.choose_clone(ix, true, cx)))
+                                .into_any_element()
+                        })
+                        .when(selectable, |row| row.child(button(("clone-mark", ix), if selected { "Marked" } else { "Mark" })
+                            .flex_none().text_xs()
+                            .when(selected, |button| button.border_color(rgb(colors().safe)))
+                            .on_click(cx.listener(move |this, _, _, cx| this.choose_clone(ix, false, cx)))))
+                        .when(queued, |row| row.child(div().text_xs().text_color(rgb(colors().muted)).child("Already staged")))
+                        .child(button(("clone-show", ix), "Show").flex_none().text_xs()
+                            .on_click(cx.listener(move |this, _, window, cx| this.show_clone_file(ix, window, cx))))
+                        .when(!keeper && !queued && !selectable, |row| row.child(div().text_xs().text_color(rgb(colors().muted)).child("Protected"))),
+                    path.to_string_lossy().into_owned(),
+                ));
+            }
+        }
+        let hint = if !current_family {
+            "This clone group changed. Close this card and open it again."
+        } else if keeper_staged {
+            "The keeper is already in your cleanup plan. Unstage it or choose another keeper."
+        } else {
+            "Choose a file to keep, then mark individual files to add to your cleanup plan."
+        };
+        div().w(px(560.)).p_4().rounded(theme::radius(10.))
+            .bg(rgb(colors().panel)).border_1().border_color(rgb(colors().border)).shadow_lg()
+            .flex().flex_col().gap_2().text_sm()
+            .child(div().font_weight(FontWeight::SEMIBOLD).child("Items sharing storage"))
+            .child(div().text_color(rgb(colors().muted)).child(hint))
+            .child(rows)
+            .child(div().flex().justify_between().items_center().gap_2()
+                .child(div().text_xs().text_color(rgb(colors().muted)).child("↑↓ Move · K Keep · Space Mark · → Show"))
+                .child(div().flex().gap_2()
+                    .child(button("close-clone-picker", "Close").on_click(cx.listener(|this, _, window, cx| this.close_clone_picker(window, cx))))
+                    .when(marked > 0 && !keeper_staged, |row| row.child(
+                        button("stage-clone-choices", format!("Stage {marked} marked"))
+                            .on_click(cx.listener(|this, _, window, cx| this.stage_clone_choices(window, cx))))))
+            )
+            .into_any_element()
+    }
+
     /// Finder-like actions on one node. The APFS volume slices (Kind::Other) aren't
     /// real folders, so they only offer Open/Reveal/Copy.
     pub(super) fn render_context_menu(&mut self, menu: ContextMenu, cx: &mut Context<Self>) -> AnyElement {
         let (name, path, actionable) = match &self.screen {
             Screen::Results(r) => {
-                let node = &r.tree.nodes[menu.node];
+                let Some(node) = r.tree.nodes.get(menu.node) else { return div().into_any_element() };
                 (node.name.clone(), r.tree.path_of(menu.node), node.kind != Kind::Other)
             }
             _ => return div().into_any_element(),
@@ -459,6 +632,15 @@ impl Broom {
                 this.collector_changed(cx);
                 cx.notify();
                 this.open_review(window, cx);
+            })));
+        }
+        if actionable {
+            items.insert(1, item("menu-quick-look", "Quick Look  ⌘Y")
+                .on_click(cx.listener(move |this, _, window, cx| this.quick_look(node, window, cx))));
+        }
+        if self.results().is_some_and(|r| !r.tree.clone_copies(node).is_empty()) {
+            items.push(item("menu-clone-peers", "Shares Storage With…  ⌥⌘Y").on_click(cx.listener(move |this, _, window, cx| {
+                this.open_clone_peers(node, window, cx);
             })));
         }
         // The protect list, from where you see the thing.

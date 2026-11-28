@@ -1,10 +1,18 @@
 # Changelog
 
-## Unreleased (0.7.0)
+## 0.7.0 (2026-11-28)
+
+- Debug builds avoid the GPUI window blur crash on macOS 27.2.
+- Quick Look previews a selected item with ⌘Y and closes with the main window. Space still stages items for cleanup.
+- Open **Shares Storage With…** (⌥⌘Y) on an APFS clone to choose a keeper and stage individual peers.
+- Put Back uses the exact Trash location reported by macOS and never overwrites the destination. Failed restores stay available under **File → Put Back Last Cleanup**.
+- Merge as Clones checks the finished clone before atomically exchanging it with the duplicate. The displaced original stays recoverable in the Trash, including writes to an already-open file.
+- The scan summary reports unreadable and cloud-only items, and cleanup estimates describe when the space comes back.
+- Reader settings say which context is sent. The reader omits a focused path it cannot make relative to the scan root.
 
 **New**
 - **Clone-aware totals.** Folder totals count blocks that APFS clones share once, so a whole-disk scan adds up to what the disk holds instead of reading above its size. A clone still shows its full size, with a *clone* tag. A folder holding clones shows *+X shared*, and its slice in the chart is hatched by that much.
-- **Merge as Clones shows its saving.** The folder totals drop by what the banner says was freed.
+- **Merge as Clones shows its saving.** Folder totals reflect the shared blocks, and the banner estimates what you’ll reclaim when you empty the Trash.
 - **Where is my space?** gets a *Shared by clones* line, inside *Files Broom read* (not added again).
 
 **Known limit:** a clone that was edited after copying still shares some blocks; those are counted once per file.

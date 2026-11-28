@@ -559,7 +559,7 @@ impl Broom {
                     )
                     .child(
                         div().text_xs().text_color(rgb(colors().muted)).child(
-                            "A fallback reader needs no key — it answers whenever the main one can't.",
+                            "When you submit a question, the reader receives the question, folder context, and matching group names and summaries. A fallback reader may receive the same details.",
                         ),
                     ),
             );

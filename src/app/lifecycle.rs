@@ -99,10 +99,13 @@ pub(super) fn window_options(cx: &App) -> WindowOptions {
         }),
         // Four columns need the room: rail, navigator, chart, cleanup.
         window_min_size: Some(size(px(1100.), px(600.))),
-        // Kept blurred (and frosted in `frost_window`) so the menu-bar
-        // residency self-test's expectations hold; every screen paints a
-        // solid background over it.
-        window_background: WindowBackgroundAppearance::Blurred,
+        // GPUI's blur view aborts on an Objective-C type check in debug builds.
+        // Broom still installs its native frost view on open and reopen.
+        window_background: if cfg!(debug_assertions) {
+            WindowBackgroundAppearance::Opaque
+        } else {
+            WindowBackgroundAppearance::Blurred
+        },
         ..Default::default()
     }
 }
@@ -110,6 +113,7 @@ pub(super) fn window_options(cx: &App) -> WindowOptions {
 /// Open the main window for the first time and remember the entity, so the
 /// app survives after the window closes.
 pub fn open_main_window(initial: Option<PathBuf>, loaded: settings::Loaded, cx: &mut App) -> WindowHandle<Broom> {
+    super::quick_look::observe_window_close(cx);
     cx.open_window(window_options(cx), |window, cx| {
         let broom = cx.new(|cx| Broom::new(initial, loaded, window, cx));
         let _ = BROOM_ENTITY.set(broom.clone());
@@ -197,7 +201,7 @@ pub(super) fn reopen(cx: &mut App) {
                 // when the window closed, else the app root.
                 let focus = {
                     let this = broom.read(cx);
-                    if this.modal.is_some() || this.review.is_some() { this.modal_focus.clone() } else { this.focus_handle.clone() }
+                    if this.modal.is_some() || this.review.is_some() || this.clone_picker.is_some() { this.modal_focus.clone() } else { this.focus_handle.clone() }
                 };
                 window.focus(&focus, cx);
                 broom

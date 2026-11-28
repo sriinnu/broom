@@ -3,7 +3,14 @@
 use super::*;
 
 impl Broom {
-    pub(super) fn go_up(&mut self, _: &GoUp, _: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn go_up(&mut self, _: &GoUp, window: &mut Window, cx: &mut Context<Self>) {
+        if self.clone_picker.is_some() {
+            self.close_any_modal(window, cx);
+            return;
+        }
+        if self.review.as_ref().is_some_and(|review| review.working) {
+            return;
+        }
         // Escape's first job is closing whatever's on top: the modal, then the menu;
         // only then does it navigate up.
         if self.modal.take().is_some() || self.review.take().is_some() || self.context_menu.take().is_some() {
@@ -127,6 +134,36 @@ impl Broom {
                 cx.notify();
             }
         }
+    }
+
+    pub(super) fn show_selected_clone_peers(&mut self, _: &ShowClonePeers, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal.is_some() || self.review.is_some() || self.empty_trash.is_some() || self.merge.is_some() || self.space.is_some() {
+            return;
+        }
+        if let Some(node) = self.results().and_then(|r| r.selected) {
+            self.open_clone_peers(node, window, cx);
+        }
+    }
+
+    pub(super) fn quick_look_selected(&mut self, _: &QuickLook, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal.is_some() || self.review.is_some() || self.clone_picker.is_some() {
+            return;
+        }
+        if let Some(ix) = self.results().and_then(|r| r.selected) {
+            self.quick_look(ix, window, cx);
+        }
+    }
+
+    pub(super) fn quick_look(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.context_menu = None;
+        let Some(r) = self.results() else { return };
+        if r.tree.nodes.get(ix).is_some_and(|node| node.kind != Kind::Other) {
+            let path = r.tree.path_of(ix);
+            if !super::quick_look::show(&path, window.window_handle().window_id()) {
+                self.show_banner(Some("Quick Look couldn’t open this item.".to_string()), cx);
+            }
+        }
+        cx.notify();
     }
 
     /// Space: stage or unstage the selected row.

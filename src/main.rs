@@ -37,10 +37,20 @@ use gpui::{App, KeyBinding};
 
 use app::{
     CloseAbout, CloseReview, CloseSettings, DismissQuery, FocusQuery, GoUp, GoBack, GoForward, ToggleRail, ToggleCleanup, SelectAll, OpenFolder, OpenSelected, OpenSettings, Rescan, FullRescan,
-    SelectNext, SelectPrev, StartOver, SubmitQuery, ToggleStaged, CopyPath, CopyRelativePath,
+    SelectNext, SelectPrev, StartOver, SubmitQuery, QuickLook, ShowClonePeers, CloseClonePeers,
+    KeepClone, StageCloneChoices, ToggleStaged, CopyPath, CopyRelativePath,
     SortBySize, SortByName, SortByModified, EmptyTrash, CloseEmptyTrash, CloseMerge, CloseSpace, Quit, HideApp, HideOthers, CloseWindow, Minimize,
 };
 
+
+/// Convert a native path without losing non-UTF-8 bytes or following symlinks.
+fn file_url(path: &std::path::Path, is_dir: bool) -> Option<objc2::rc::Retained<objc2_foundation::NSURL>> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let pointer = std::ptr::NonNull::new(path.as_ptr().cast_mut())?;
+    // NSURL copies the NUL-terminated representation during the call.
+    Some(unsafe { objc2_foundation::NSURL::fileURLWithFileSystemRepresentation_isDirectory_relativeToURL(pointer, is_dir, None) })
+}
 
 fn main() {
     let _ = app::LAUNCHED.set(std::time::Instant::now());
@@ -144,6 +154,15 @@ fn main() {
             KeyBinding::new("enter", OpenSelected, Some("Broom && !EditableText")),
             KeyBinding::new("left", GoUp, Some("Broom && !EditableText")),
             KeyBinding::new("space", ToggleStaged, Some("Broom && !EditableText")),
+            KeyBinding::new("cmd-y", QuickLook, Some("Broom && !EditableText")),
+            KeyBinding::new("cmd-alt-y", ShowClonePeers, Some("Broom && !EditableText")),
+            KeyBinding::new("escape", CloseClonePeers, Some("ClonePeers")),
+            KeyBinding::new("up", SelectPrev, Some("ClonePeers")),
+            KeyBinding::new("down", SelectNext, Some("ClonePeers")),
+            KeyBinding::new("space", ToggleStaged, Some("ClonePeers")),
+            KeyBinding::new("k", KeepClone, Some("ClonePeers")),
+            KeyBinding::new("right", OpenSelected, Some("ClonePeers")),
+            KeyBinding::new("enter", StageCloneChoices, Some("ClonePeers")),
             KeyBinding::new("cmd-c", CopyPath, Some("Broom && !EditableText")),
             KeyBinding::new("cmd-shift-c", CopyRelativePath, Some("Broom && !EditableText")),
             KeyBinding::new("/", FocusQuery, Some("Broom && !EditableText")),

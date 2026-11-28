@@ -7,7 +7,7 @@
 <p align="center">
   <b>Ask your Mac what's eating the disk. Tick what should go. Trash it.</b><br>
   A menu-bar panel that understands plain English, over a fast, exact disk explorer with a live sunburst.<br>
-  Native macOS, written in Rust, GPU-rendered, no analytics, nothing leaves the machine but the question you typed.
+  Native macOS, written in Rust, GPU-rendered, no analytics. Searches stay on your Mac unless you submit a question to the optional AI reader.
 </p>
 
 <p align="center">
@@ -66,14 +66,14 @@ for the usual space hogs, and a cleanup plan you stage with checkboxes before an
   size, with a *clone* tag; a folder holding clones shows *+X shared*, and its slice in the chart
   is hatched by that much.
 - **Empty Trash** (⇧⌘⌫) says what's there first, then shows how much the disk actually gained.
-- **Merge as Clones** turns duplicate files into APFS clones: every file stays, the space comes back.
+- **Merge as Clones** leaves APFS clones at the original locations and keeps the displaced files in the Trash. Empty the Trash to reclaim the space.
 - **Never offer this.** Right-click › Never Offer This, or Settings › Protected. Broom, and any
   agent using the CLI, will never move it, or anything holding it, to the Trash.
 
 **And**
 - Native macOS, written in Rust. No analytics; it only reads file metadata.
-- An optional AI reader double-checks what you meant. It sees folder names, never full paths, and
-  Broom works fully without it.
+- An optional AI reader double-checks what you meant. It receives the question, folder context and
+  matching group names and summaries when you submit a question. Broom works fully without it.
 - Five looks (Settings › Appearance), and a small investigator who comments while it scans.
 
 **Known limit:** a clone that was edited after copying still shares some blocks with the
@@ -159,7 +159,7 @@ Broom remembers each scan (folder sizes only, for a week), so scanning the same 
 what grew since: `+1.2 GB` in amber beside a folder, shrinkage in green. Once a scan finishes,
 identical copies of your own files show up as a **Duplicate files** finding (compared byte for
 byte; APFS clones and hard links don't count, since deleting them frees nothing), with **Merge as
-Clones…** beside it. After a move to the Trash, the banner has **Put Back** and **Empty Trash…**.
+Clones…** beside it. After a cleanup move to the Trash, use **Put Back** on the banner or **File → Put Back Last Cleanup**. If a restore fails, you can try again after resolving the conflict. For Merge as Clones, retrieve a displaced original from Finder’s Trash if needed. If Broom cannot safely move it there, the result shows its recovery path beside the clone. Right-click a clone and choose **Shares Storage With…** to pick a file to keep and mark individual peers for staging.
 
 | Keys | Action |
 |---|---|
@@ -168,6 +168,8 @@ Clones…** beside it. After a move to the Trash, the banner has **Put Back** an
 | → or Enter | Open the selected folder |
 | ← , ⌫, Esc or ⌘↑ | Go to the enclosing folder |
 | Space | Stage or unstage the selected row |
+| ⌘Y | Quick Look at the selected row |
+| ⌥⌘Y | Inspect files sharing storage with the selected row |
 | ⌘C | Copy the selected row's path (or the open folder's) |
 | ⇧⌘C | The same, with your home folder as `~` |
 | / | Search or ask |

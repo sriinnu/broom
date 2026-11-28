@@ -101,6 +101,17 @@ pub(super) struct ContextMenu {
     pub(super) at: Point<Pixels>,
 }
 
+/// A review of clone peers. The keeper is never included in the staged choices.
+pub(super) struct ClonePicker {
+    pub(super) scan_id: u64,
+    pub(super) current: usize,
+    pub(super) keeper: usize,
+    pub(super) rows: Vec<usize>,
+    pub(super) cursor: usize,
+    pub(super) marked: HashSet<usize>,
+    pub(super) scroll: ScrollHandle,
+}
+
 /// Which tab of the Help / About card is in front.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum PanelTab {

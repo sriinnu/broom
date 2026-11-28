@@ -1,6 +1,7 @@
 //! Findings, the cleanup plan, the review card and the move to Trash.
 
 use super::*;
+use std::path::Path;
 
 impl Broom {
     /// Work out what the Collector frees, off the UI thread.
@@ -31,7 +32,7 @@ impl Broom {
 
     /// "Review and Move to Trash…": open the review card over the staged list.
     pub(super) fn open_review(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy || self.modal.is_some() {
+        if self.busy || self.trash_working || self.modal.is_some() {
             return;
         }
         let Some(r) = self.results() else { return };
@@ -65,6 +66,9 @@ impl Broom {
     }
 
     pub(super) fn close_review(&mut self, _: &CloseReview, window: &mut Window, cx: &mut Context<Self>) {
+        if self.review.as_ref().is_some_and(|review| review.working) {
+            return;
+        }
         if self.review.take().is_some() {
             window.focus(&self.focus_handle, cx);
             cx.notify();
@@ -88,15 +92,17 @@ impl Broom {
             return;
         }
         let paths: Vec<PathBuf> = items.iter().map(|&ix| r.tree.path_of(ix)).collect();
-        let paths_after = paths.clone();
+        let requested_paths = paths.clone();
+        let scan_id = r.scan_id;
         let freed = r.collector_frees.get().unwrap_or_else(|| r.collected_size());
         let sizes: Vec<(scan::Kind, u64)> = items.iter().map(|&ix| (r.tree.nodes[ix].kind, r.tree.nodes[ix].size)).collect();
         let drop = trashcan::Drop::new(trashcan::Item::from_sizes(&sizes), freed);
         if let Some(review) = &mut self.review {
             review.drop = Some(drop.clone());
         }
+        self.trash_working = true;
         cx.spawn(async move |this, cx| {
-            let (result, landed) = cx.background_spawn(async move { trashcan::send_tracked(&paths) }).await;
+            let (result, moves) = cx.background_spawn(async move { trashcan::send_tracked(&paths) }).await;
             if result.is_ok() {
                 // Let the last item land and the lid close before the card goes.
                 drop.settle();
@@ -104,6 +110,23 @@ impl Broom {
             }
             this.update(cx, |this, cx| {
                 this.review = None;
+                this.trash_working = false;
+                let moved_count = moves.len();
+                let moved_paths: HashSet<&Path> = moves.iter().map(|moved| moved.original.as_path()).collect();
+                let attached: Vec<usize> = this.results().filter(|r| r.scan_id == scan_id).map(|r| {
+                    items.iter().copied().zip(&requested_paths)
+                        .filter(|(ix, path)| moved_paths.contains(path.as_path()) && r.tree.find(path) == Some(*ix))
+                        .map(|(ix, _)| ix)
+                        .collect()
+                }).unwrap_or_default();
+                if moved_count > 0 {
+                    this.last_trashed = moves.into_iter().filter_map(|moved| moved.receipt).collect();
+                    this.last_trash_credit = if result.is_ok() {
+                        (freed as u128 * this.last_trashed.len() as u128 / moved_count as u128) as u64
+                    } else {
+                        0
+                    };
+                }
                 match result {
                     Ok(()) => {
                         // Where the trashed things sit on the chart, read before
@@ -111,7 +134,7 @@ impl Broom {
                         let specks = this
                             .results()
                             .map(|r| {
-                                let gone = |n: usize| items.iter().any(|&ix| r.tree.is_ancestor_or_self(ix, n));
+                                let gone = |n: usize| attached.iter().any(|&ix| r.tree.is_ancestor_or_self(ix, n));
                                 let slices: Vec<(f32, f32, usize)> = r
                                     .segments
                                     .iter()
@@ -124,7 +147,9 @@ impl Broom {
                                 delight::specks(&slices)
                             })
                             .unwrap_or_default();
-                        this.remove_trashed(&items, cx);
+                        if !attached.is_empty() {
+                            this.remove_trashed(&attached, cx);
+                        }
                         let milestone = delight::record_sweep(freed);
                         let what = if items.len() == 1 { "1 item".to_string() } else { format!("{} items", items.len()) };
                         // The plain text stays as the fallback (and for anything
@@ -134,7 +159,6 @@ impl Broom {
                             cx,
                         );
                         if let Some(r) = this.results() {
-                            r.last_trashed = landed;
                             r.freed = Some(Freed { bytes: freed, items: items.len(), milestone, emptied: None });
                             r.dust = (!specks.is_empty() && !delight::reduce_motion())
                                 .then(|| Rc::new(delight::Puff { start: clock::now(), specks }));
@@ -143,10 +167,11 @@ impl Broom {
                         cx.play_haptic_feedback(HapticFeedbackStyle::LevelChange);
                     }
                     Err(error) => {
-                        // Not atomic: whatever did go should leave the tree too.
-                        let gone: Vec<usize> = items.iter().copied().zip(&paths_after).filter(|(_, p)| !p.exists()).map(|(ix, _)| ix).collect();
-                        if !gone.is_empty() {
-                            this.remove_trashed(&gone, cx);
+                        if !attached.is_empty() {
+                            this.remove_trashed(&attached, cx);
+                        }
+                        if moved_count > 0 {
+                            this.show_banner(Some(format!("Moved {moved_count} to Trash. Some items stayed in place.")), cx);
                         }
                         this.error = Some(format!("Couldn’t move to Trash: {error}"));
                     }
@@ -654,7 +679,7 @@ impl Broom {
                         false,
                     ))
                     .child(total_line(
-                        "Will free",
+                        "Est. back after emptying Trash",
                         match (empty, frees) {
                             (true, _) => "—".to_string(),
                             (false, Some(frees)) => format_size(frees),

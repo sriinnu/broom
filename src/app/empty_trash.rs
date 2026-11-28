@@ -28,7 +28,7 @@ pub(super) struct EmptyTrashState {
 impl Broom {
     /// File › Empty Trash…, ⇧⌘⌫, or the button on the after-sweep banner.
     pub(super) fn open_empty_trash(&mut self, _: &EmptyTrash, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy || self.review.is_some() || self.empty_trash.is_some() || self.merge.is_some() || self.space.is_some() {
+        if self.busy || self.trash_working || self.review.is_some() || self.empty_trash.is_some() || self.merge.is_some() || self.space.is_some() {
             return;
         }
         self.modal = None;
@@ -131,9 +131,11 @@ impl Broom {
         // Finder doesn't say what went; the disk's gain is the honest number.
         let bytes = if emptied.gone.bytes > 0 { emptied.gone.bytes } else { gain };
         let note = EmptiedNote { gain, stuck: emptied.stuck.len() };
-        if let Some(r) = self.results() {
-            // Nothing is left to put back.
-            r.last_trashed.clear();
+        if emptied.stuck.is_empty() {
+            self.last_trashed.clear();
+            self.last_trash_credit = 0;
+        }
+        if self.results().is_some() {
             self.empty_trash = None;
             self.show_banner(Some(format!("Emptied the Trash ({})", format_size(bytes))), cx);
             if let Some(r) = self.results() {

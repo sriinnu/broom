@@ -83,9 +83,6 @@ pub(super) struct Results {
     pub(super) banner: Option<Instant>,
     pub(super) banner_text: Option<String>,
     pub(super) banner_version: u64,
-    /// What the last move to the Trash sent where (original, now), for the
-    /// banner's "Put Back". Cleared with the banner.
-    pub(super) last_trashed: Vec<(PathBuf, PathBuf)>,
     /// When the banner is a move to the Trash: what it freed, for the count-up
     /// and the comparison. Cleared by any other banner.
     pub(super) freed: Option<Freed>,
@@ -212,7 +209,6 @@ impl Results {
         self.banner = old.banner;
         self.banner_text = old.banner_text.clone();
         self.banner_version = old.banner_version;
-        self.last_trashed = old.last_trashed.clone();
         self.legend_hover = old.legend_hover;
         self.relayout();
     }
@@ -277,7 +273,6 @@ impl Results {
             banner: None,
             banner_text: None,
             banner_version: 0,
-            last_trashed: Vec::new(),
             freed: None,
             dupe_pairs: Vec::new(),
             dust: None,

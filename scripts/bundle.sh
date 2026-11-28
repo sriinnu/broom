@@ -25,7 +25,7 @@ APP=dist/Broom.app
 # (The encoded form, separated by 0x1f, copes with spaces in the paths.)
 TARGET=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/broom-bundle
 export CARGO_ENCODED_RUSTFLAGS="--remap-path-prefix=$HOME=/build"$'\x1f'"--remap-path-prefix=$PWD=/broom"
-cargo build --release --target-dir "$TARGET"
+cargo build --release --locked --target-dir "$TARGET"
 rm -rf "$APP" && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$TARGET/release/broom" "$APP/Contents/MacOS/broom"
 [[ -f packaging/AppIcon.icns ]] || python3 scripts/make-icon.py packaging
@@ -50,7 +50,9 @@ if $DMG; then
     rm -f dist/Broom.dmg
     hdiutil create -quiet -volname Broom -srcfolder "$STAGE" -ov -format UDZO dist/Broom.dmg
     rm -rf "$STAGE"
-    [[ -n "${BROOM_SIGN_ID:-}" ]] && codesign --force --sign "$BROOM_SIGN_ID" dist/Broom.dmg
+    if [[ -n "${BROOM_SIGN_ID:-}" ]]; then
+        codesign --force --timestamp --sign "$BROOM_SIGN_ID" dist/Broom.dmg
+    fi
     echo "built dist/Broom.dmg"
     if [[ -n "${BROOM_NOTARY_PROFILE:-}" ]]; then
         xcrun notarytool submit dist/Broom.dmg --keychain-profile "$BROOM_NOTARY_PROFILE" --wait

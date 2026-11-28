@@ -18,6 +18,7 @@ mod navigation;
 mod navigator;
 mod panes;
 mod query;
+mod quick_look;
 mod results;
 mod scan_flow;
 mod scanning;
@@ -85,7 +86,8 @@ use crate::sunburst::{self, Geometry, Hit, Segment, Target};
 actions!(broom, [
     GoUp, OpenFolder, Rescan, StartOver, FocusQuery, SubmitQuery, DismissQuery,
     OpenSettings, CloseSettings, About, CloseAbout,
-    SelectNext, SelectPrev, OpenSelected, ToggleStaged, CloseReview, CopyPath, CopyRelativePath,
+    SelectNext, SelectPrev, OpenSelected, QuickLook, ShowClonePeers, CloseClonePeers,
+    KeepClone, StageCloneChoices, ToggleStaged, CloseReview, CopyPath, CopyRelativePath,
     SortBySize, SortByName, SortByModified,
     GoBack, GoForward, ToggleRail, ToggleCleanup, SelectAll, FullRescan,
     EmptyTrash, CloseEmptyTrash, CloseMerge, ShowSpace, CloseSpace

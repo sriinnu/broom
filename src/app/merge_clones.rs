@@ -1,7 +1,7 @@
 //! Merge as Clones: the "Duplicate files" finding's other way out. Instead of
 //! sending extra copies to the Trash, each is replaced in place by an APFS
-//! clone of the copy that stays (see `duplicates::merge`). Nothing is deleted
-//! and nothing moves; the space comes back at once, no Trash to empty.
+//! clone of the copy that stays (see `duplicates::merge`). The displaced
+//! originals go to the Trash so they remain recoverable.
 
 use super::*;
 
@@ -22,12 +22,13 @@ pub(super) const DUPLICATES: &str = "Duplicate files";
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(super) struct Merged {
     pub(super) merged: Vec<PathBuf>,
-    pub(super) freed: u64,
+    pub(super) reclaimable: u64,
     pub(super) changed: usize,
     pub(super) no_clone: usize,
     pub(super) locked: usize,
     pub(super) protected: usize,
     pub(super) failed: Vec<String>,
+    pub(super) recovery: Vec<PathBuf>,
     /// Each merged file and the clone family it now shares, so the tree can
     /// count the pair's blocks once.
     pub(super) clones: Vec<(PathBuf, u64)>,
@@ -36,14 +37,18 @@ pub(super) struct Merged {
 impl Merged {
     pub(super) fn tally(&mut self, pair: &Pair, outcome: Result<u64, Skip>) {
         match outcome {
-            Ok(freed) => {
+            Ok(reclaimable) => {
                 self.merged.push(pair.extra.clone());
-                self.freed += freed;
+                self.reclaimable += reclaimable;
             }
             Err(Skip::Changed) => self.changed += 1,
             Err(Skip::NoClone) => self.no_clone += 1,
             Err(Skip::Locked) => self.locked += 1,
             Err(Skip::Protected) => self.protected += 1,
+            Err(Skip::Recovery(path)) => {
+                self.merged.push(pair.extra.clone());
+                self.recovery.push(path);
+            }
             Err(Skip::Failed(why)) => self.failed.push(why),
         }
     }
@@ -53,8 +58,8 @@ impl Merged {
         let n = self.merged.len();
         let head = match n {
             0 => "No duplicates merged".to_string(),
-            1 => format!("Merged 1 duplicate into a clone ({} freed)", format_size(self.freed)),
-            n => format!("Merged {n} duplicates into clones ({} freed)", format_size(self.freed)),
+            1 => "Merged 1 duplicate into a clone".to_string(),
+            n => format!("Merged {n} duplicates into clones"),
         };
         let mut left = Vec::new();
         let count = |n: usize, what: &str| (n > 0).then(|| format!("{n} {what}"));
@@ -63,12 +68,15 @@ impl Merged {
         left.extend(count(self.locked, "locked or hard-linked"));
         left.extend(count(self.protected, "protected"));
         left.extend(count(self.failed.len(), "failed"));
-        let detail = if left.is_empty() {
-            "Every file is where it was; the bytes are stored once.".to_string()
-        } else {
-            format!("Left as they were: {}.", left.join(", "))
-        };
-        format!("{head}\n{detail}")
+        let mut lines = vec![head];
+        if !left.is_empty() {
+            lines.push(format!("Left as they were: {}.", left.join(", ")));
+        }
+        if self.reclaimable > 0 {
+            lines.push(format!("Empty the Trash to reclaim about {}.", format_size(self.reclaimable)));
+        }
+        lines.extend(self.recovery.iter().map(|path| format!("Original kept at {}", path.display())));
+        lines.join("\n")
     }
 }
 
@@ -134,7 +142,7 @@ impl Broom {
                     let mut merged = Merged::default();
                     for pair in &pairs {
                         let outcome = duplicates::merge(pair);
-                        if outcome.is_ok() {
+                        if outcome.is_ok() || matches!(outcome, Err(Skip::Recovery(_))) {
                             for path in [&pair.keep, &pair.extra] {
                                 let id = crate::dirlist::file_sharing(path).filter(|s| s.all && s.refs > 1).map(|s| s.clone_id);
                                 if let Some(id) = id {
@@ -187,6 +195,10 @@ impl Broom {
             }
         }
         self.collector_changed(cx);
+        if !merged.recovery.is_empty() {
+            let paths = merged.recovery.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join("\n");
+            self.error = Some(format!("Originals kept outside the Trash\n{paths}"));
+        }
         self.show_banner(Some(merged.banner()), cx);
         cx.notify();
     }
@@ -216,17 +228,17 @@ impl Broom {
                     .gap_1()
                     .text_sm()
                     .child(format!(
-                        "{copies} will become {} of the copy that stays, freeing about {}.",
+                        "{copies} will become {}. Empty the Trash afterward to reclaim about {}.",
                         if n == 1 { "an APFS clone" } else { "APFS clones" },
                         format_size(frees)
                     ))
-                    .child("Every file keeps its place, name, dates and tags. Nothing is deleted or moved."),
+                    .child("Each clone keeps the original name, location, dates and tags. The originals move to Trash."),
             )
             .child(
                 div()
                     .text_xs()
                     .text_color(rgb(colors().muted))
-                    .child("The bytes are stored once. If you later edit one of the files, only what changes takes new space."),
+                    .child("After you empty the Trash, the clones share storage. Edits to either copy only use space for the changed blocks."),
             )
             .child(
                 div()
@@ -273,10 +285,10 @@ mod tests {
         m.tally(&pair("/c"), Err(Skip::Changed));
         m.tally(&pair("/d"), Err(Skip::Locked));
         let text = m.banner();
-        assert!(text.starts_with("Merged 2 duplicates into clones (5"), "{text}");
-        assert!(text.ends_with("Left as they were: 1 changed since the scan, 1 locked or hard-linked."), "{text}");
-        let mut clean = Merged::default();
-        clean.tally(&pair("/a"), Ok(1));
-        assert!(clean.banner().ends_with("the bytes are stored once."));
+        assert!(text.starts_with("Merged 2 duplicates into clones\n"), "{text}");
+        assert!(text.contains("Left as they were: 1 changed since the scan, 1 locked or hard-linked."), "{text}");
+        assert!(text.contains("Empty the Trash to reclaim about 5"), "{text}");
+        m.tally(&pair("/e"), Err(Skip::Recovery(PathBuf::from("/hold/e"))));
+        assert!(m.banner().ends_with("Original kept at /hold/e"));
     }
 }

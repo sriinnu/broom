@@ -10,8 +10,8 @@
 //!
 //! An extra copy can go to the Trash, or be merged: replaced in place by an
 //! APFS clone of the copy that stays (`merge`). Both files stay where they
-//! are, with their own names, dates, permissions and tags, but the bytes are
-//! stored once; editing either later takes new space only for what changes.
+//! are, with their own names, dates, permissions and tags. The displaced
+//! original stays recoverable in the Trash until it is emptied.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -104,6 +104,8 @@ pub enum Skip {
     Locked,
     /// On the protect list (Settings › Protected): Broom never rewrites it.
     Protected,
+    /// The exchange succeeded, but the original couldn't safely go to Trash.
+    Recovery(PathBuf),
     Failed(String),
 }
 
@@ -120,10 +122,17 @@ fn os_error(what: &str) -> Skip {
 
 /// Replace `pair.extra` with an APFS clone of `pair.keep`, keeping the extra's
 /// own name, place, permissions, dates (created and modified), flags, ACL and
-/// extended attributes (Finder tags, "where from"). The swap is one rename:
-/// at every moment the path holds either the old file or the finished clone.
-/// Returns the bytes freed (what the extra didn't share before).
+/// extended attributes (Finder tags, "where from"). Move the exchanged file
+/// to the Trash so writes through an already-open handle aren't discarded.
+/// Returns the bytes reclaimable after emptying the Trash.
 pub fn merge(pair: &Pair) -> Result<u64, Skip> {
+    merge_with_backup(pair, |original| {
+        let (_, moved) = crate::trashcan::send_tracked(&[original.to_path_buf()]);
+        !moved.is_empty()
+    })
+}
+
+fn merge_with_backup(pair: &Pair, back_up: impl FnOnce(&Path) -> bool) -> Result<u64, Skip> {
     use std::os::macos::fs::MetadataExt as _;
     use std::os::unix::fs::MetadataExt;
     let (extra, keep) = (&pair.extra, &pair.keep);
@@ -150,10 +159,11 @@ pub fn merge(pair: &Pair) -> Result<u64, Skip> {
     if !same_bytes(keep, extra) {
         return Err(Skip::Changed);
     }
-    let name = extra.file_name().ok_or(Skip::Changed)?.to_string_lossy();
-    let tmp = extra.with_file_name(format!(".{name}.broom-clone-{}", std::process::id()));
+    let parent = extra.parent().ok_or(Skip::Changed)?;
+    let mut temp = tempfile::Builder::new().prefix(".broom-clone-").tempdir_in(parent)
+        .map_err(|error| Skip::Failed(format!("create clone workspace: {error}")))?;
+    let tmp = temp.path().join(extra.file_name().ok_or(Skip::Changed)?);
     let (src, dst, from) = (c_path(keep)?, c_path(&tmp)?, c_path(extra)?);
-    let _ = std::fs::remove_file(&tmp);
     if unsafe { libc::clonefile(src.as_ptr(), dst.as_ptr(), CLONE_NOFOLLOW) } != 0 {
         let error = std::io::Error::last_os_error();
         return Err(match error.raw_os_error() {
@@ -161,7 +171,12 @@ pub fn merge(pair: &Pair) -> Result<u64, Skip> {
             _ => Skip::Failed(format!("clone: {error}")),
         });
     }
-    let finish = || -> Result<(), Skip> {
+    {
+        // The source may have changed since the first comparison. Check what was
+        // actually cloned before replacing the original.
+        if !same_bytes(&tmp, extra) {
+            return Err(Skip::Changed);
+        }
         // The clone carries the kept copy's attributes; it should carry the extra's.
         for attr in xattr_names(&dst) {
             unsafe { libc::removexattr(dst.as_ptr(), attr.as_ptr(), libc::XATTR_NOFOLLOW) };
@@ -170,20 +185,41 @@ pub fn merge(pair: &Pair) -> Result<u64, Skip> {
             return Err(os_error("copy attributes"));
         }
         set_created(&dst, meta.st_birthtime(), meta.st_birthtime_nsec())?;
-        // Last look before the swap: the extra must still be the file we read.
+        // A writer can still update after this check. The exchange retains
+        // whatever actually occupied the destination at the time of the swap.
         let now = extra.symlink_metadata().map_err(|_| Skip::Changed)?;
-        if now.ino() != meta.ino() || now.mtime() != meta.mtime() || now.mtime_nsec() != meta.mtime_nsec() || now.len() != meta.len() {
+        if !same_original(&meta, &now) || now.ctime() != meta.ctime() || now.ctime_nsec() != meta.ctime_nsec() {
             return Err(Skip::Changed);
         }
-        std::fs::rename(&tmp, extra).map_err(|e| Skip::Failed(format!("swap: {e}")))
-    };
-    match finish() {
-        Ok(()) => Ok(before),
-        Err(skip) => {
-            let _ = std::fs::remove_file(&tmp);
-            Err(skip)
-        }
     }
+    // From here on the workspace can contain a user's original. Disable
+    // recursive TempDir cleanup before making the exchange.
+    temp.disable_cleanup(true);
+    if unsafe { libc::renamex_np(dst.as_ptr(), from.as_ptr(), libc::RENAME_SWAP) } != 0 {
+        let error = os_error("exchange");
+        temp.disable_cleanup(false);
+        return Err(error);
+    }
+    // Recheck the actual displaced item. If it changed, preserve the exact
+    // file beside its clone and tell the user where to recover it.
+    if !tmp.symlink_metadata().is_ok_and(|displaced| same_original(&meta, &displaced)) || !back_up(&tmp) {
+        return Err(Skip::Recovery(tmp));
+    }
+    let _ = std::fs::remove_dir(temp.path());
+    Ok(before)
+}
+
+fn same_original(before: &std::fs::Metadata, now: &std::fs::Metadata) -> bool {
+    use std::os::macos::fs::MetadataExt as _;
+    use std::os::unix::fs::MetadataExt;
+    now.is_file()
+        && now.dev() == before.dev()
+        && now.ino() == before.ino()
+        && now.nlink() == before.nlink()
+        && now.len() == before.len()
+        && now.mtime() == before.mtime()
+        && now.mtime_nsec() == before.mtime_nsec()
+        && now.st_flags() == before.st_flags()
 }
 
 fn file_sharing_private(path: &Path) -> Option<u64> {
@@ -360,10 +396,19 @@ mod tests {
         let before = extra.metadata().unwrap();
 
         let pair = Pair { extra: extra.clone(), keep: keep.clone(), frees: 0 };
-        let freed = merge(&pair).expect("merged");
-        assert!(freed >= 1_900_000, "freed {freed}");
+        let mut open_original = std::fs::File::options().write(true).open(&extra).unwrap();
+        let saved = dir.join("saved.bin");
+        let reclaimable = merge_with_backup(&pair, |original| {
+            use std::io::Write;
+            open_original.write_all(b"new write").unwrap();
+            std::fs::rename(original, &saved).unwrap();
+            true
+        })
+        .expect("merged");
+        assert!(reclaimable >= 1_900_000, "reclaimable {reclaimable}");
         let after = extra.metadata().unwrap();
         assert_eq!(std::fs::read(&extra).unwrap(), bytes);
+        assert!(std::fs::read(&saved).unwrap().starts_with(b"new write"));
         assert_eq!(after.permissions().mode() & 0o777, 0o640);
         assert_eq!(after.modified().unwrap(), old);
         assert_eq!(after.st_birthtime(), before.st_birthtime());
@@ -374,6 +419,26 @@ mod tests {
         // Merging again does nothing and frees nothing.
         assert_eq!(merge(&pair), Ok(0));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn merging_preserves_the_original_when_trash_is_unavailable() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let keep = dir.path().join("keep.bin");
+        let extra = dir.path().join("extra.bin");
+        std::fs::write(&keep, b"duplicate").unwrap();
+        std::fs::write(&extra, b"duplicate").unwrap();
+        let original_inode = extra.metadata().unwrap().ino();
+        let pair = Pair { extra, keep, frees: 0 };
+
+        let Err(Skip::Recovery(saved)) = merge_with_backup(&pair, |_| false) else {
+            panic!("a failed Trash move should preserve the original");
+        };
+        assert_eq!(saved.metadata().unwrap().ino(), original_inode);
+        assert_ne!(pair.extra.metadata().unwrap().ino(), original_inode);
+        assert_eq!(std::fs::read(&saved).unwrap(), b"duplicate");
+        assert_eq!(std::fs::read(&pair.extra).unwrap(), b"duplicate");
     }
 
     #[test]
