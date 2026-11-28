@@ -9,25 +9,26 @@ pub(super) fn use_cache() -> bool {
 }
 
 impl Broom {
-    /// The banner's "Put back": move the last batch out of the Trash, then
+    /// Put the last batch back from the Trash, then
     /// re-read just the folders they went back into.
     pub(super) fn put_back(&mut self, cx: &mut Context<Self>) {
-        let Some(r) = self.results() else { return };
-        let landed = std::mem::take(&mut r.last_trashed);
-        if landed.is_empty() {
+        if self.busy || self.trash_working || self.review.is_some() || self.empty_trash.is_some() || self.last_trashed.is_empty() {
             return;
         }
-        r.banner = None;
-        // What the lifetime tally counted for this batch, to take back for
-        // whatever actually comes out of the Trash.
-        let swept = r.freed.take().map(|f| f.bytes).unwrap_or(0);
+        self.trash_working = true;
+        let landed = std::mem::take(&mut self.last_trashed);
+        let swept = self.last_trash_credit;
         let sent = landed.len();
-        let scan_id = r.scan_id;
+        let scan_id = self.results().map(|r| {
+            r.banner = None;
+            r.freed = None;
+            r.scan_id
+        });
         let (excludes, outline_depth) = (self.settings.exclude_paths(), self.settings.outline_depth);
         cx.spawn(async move |this, cx| {
-            let (restored, folders) = cx
+            let (restored, remaining, folders) = cx
                 .background_spawn(async move {
-                    let restored = trashcan::put_back(&landed);
+                    let (restored, remaining) = trashcan::put_back(landed);
                     let mut parents: Vec<PathBuf> = restored.iter().filter_map(|p| p.parent().map(PathBuf::from)).collect();
                     parents.sort();
                     parents.dedup();
@@ -35,12 +36,14 @@ impl Broom {
                     let outer: Vec<PathBuf> = parents.iter().filter(|p| !parents.iter().any(|q| q != *p && p.starts_with(q))).cloned().collect();
                     let folders: Vec<(PathBuf, Tree)> =
                         outer.into_iter().map(|p| { let t = scan::scan(&p, &scan::Progress::default(), &excludes, outline_depth); (p, t) }).collect();
-                    (restored, folders)
+                    (restored, remaining, folders)
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
+                this.trash_working = false;
+                this.last_trashed = remaining;
                 let mut recompute = false;
-                if let Some(r) = this.results().filter(|r| r.scan_id == scan_id) {
+                if let Some(r) = this.results().filter(|r| Some(r.scan_id) == scan_id && !folders.is_empty()) {
                     for (folder, fresh) in &folders {
                         if let Some(ix) = r.tree.find(folder) {
                             // The graft detaches what was inside; don't be left standing in it.
@@ -57,11 +60,20 @@ impl Broom {
                 if recompute {
                     this.collector_changed(cx);
                 }
-                if sent > 0 && !restored.is_empty() {
-                    delight::record_put_back((swept as u128 * restored.len() as u128 / sent as u128) as u64);
+                let reversed = (swept as u128 * restored.len() as u128 / sent as u128) as u64;
+                this.last_trash_credit = swept - reversed;
+                if !restored.is_empty() {
+                    delight::record_put_back(reversed);
                 }
-                let what = if restored.len() == 1 { "1 item".to_string() } else { format!("{} items", restored.len()) };
-                this.show_banner(Some(format!("Put {what} back where it was.")), cx);
+                let restored = restored.len();
+                let pending = this.last_trashed.len();
+                let message = match (restored, pending) {
+                    (0, _) => "No items could be put back.\nCheck the original paths and try again.".to_string(),
+                    (1, 0) => "Put 1 item back where it was.".to_string(),
+                    (_, 0) => format!("Put {restored} items back where they were."),
+                    _ => format!("Put {restored} back. {pending} couldn’t be restored.\nYou can try Put Back again."),
+                };
+                this.show_banner(Some(message), cx);
                 cx.notify();
             });
         })
@@ -236,6 +248,7 @@ impl Broom {
     pub(super) fn start_scan(&mut self, root: PathBuf, cx: &mut Context<Self>) {
         self.error = None;
         self.context_menu = None;
+        self.clone_picker = None;
         onboarding::mark_first_run_done();
         let progress = Arc::new(Progress::default());
         let started = clock::now();
@@ -407,7 +420,6 @@ impl Broom {
                         r.banner = None;
                         r.banner_text = None;
                         r.freed = None;
-                        r.last_trashed.clear();
                         cx.notify();
                     }
                 }

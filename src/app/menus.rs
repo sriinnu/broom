@@ -5,7 +5,7 @@
 use super::*;
 use gpui::{Menu, MenuItem, SystemMenuType};
 
-actions!(broom, [Quit, HideApp, HideOthers, ShowAll, CloseWindow, Minimize, Zoom, BringAllToFront, OpenHelp]);
+actions!(broom, [Quit, HideApp, HideOthers, ShowAll, CloseWindow, Minimize, Zoom, BringAllToFront, OpenHelp, PutBackLastCleanup]);
 
 /// The menus. Built again whenever a column is hidden or shown, so the View
 /// menu says what choosing the item will do ("Hide Sidebar", "Show Sidebar")
@@ -31,6 +31,7 @@ pub fn app_menus(rail_hidden: bool, cleanup_hidden: bool) -> Vec<Menu> {
             MenuItem::action("Rescan", Rescan),
             MenuItem::action("Full Rescan", FullRescan),
             MenuItem::separator(),
+            MenuItem::action("Put Back Last Cleanup", PutBackLastCleanup),
             MenuItem::action("Empty Trash…", EmptyTrash),
             MenuItem::separator(),
             MenuItem::action("Close Window", CloseWindow),
@@ -54,6 +55,7 @@ pub fn app_menus(rail_hidden: bool, cleanup_hidden: bool) -> Vec<Menu> {
             MenuItem::action(if cleanup_hidden { "Show Cleanup Column" } else { "Hide Cleanup Column" }, ToggleCleanup),
             MenuItem::separator(),
             MenuItem::action("Where Is My Space…", ShowSpace),
+            MenuItem::action("Shares Storage With…", ShowClonePeers),
         ]),
         menu("Go", vec![
             MenuItem::action("Back", GoBack),

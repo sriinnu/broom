@@ -65,6 +65,7 @@ pub struct Tree {
 #[derive(Default)]
 pub struct Shared {
     by_node: HashMap<usize, u64>,
+    families: HashMap<u64, Vec<usize>>,
 }
 
 impl Shared {
@@ -83,20 +84,17 @@ impl Shared {
                 None => return ix == Tree::ROOT,
             }
         };
+        families.retain(|_, members| {
+            members.retain(|&ix| attached(ix));
+            members.len() > 1
+        });
         let mut by_node: HashMap<usize, u64> = HashMap::new();
         let mut under: HashMap<usize, u64> = HashMap::new();
         for members in families.values() {
-            if members.len() < 2 {
-                continue;
-            }
-            let members: Vec<usize> = members.iter().copied().filter(|&m| attached(m)).collect();
-            if members.len() < 2 {
-                continue;
-            }
             // Pure clones are the same size; take the smallest to never overstate.
             let size = members.iter().map(|&m| tree.nodes[m].size).min().unwrap_or(0);
             under.clear();
-            for &m in &members {
+            for &m in members {
                 let mut cur = tree.nodes[m].parent;
                 while let Some(p) = cur {
                     *under.entry(p).or_default() += 1;
@@ -112,7 +110,7 @@ impl Shared {
                 }
             }
         }
-        Shared { by_node }
+        Shared { by_node, families }
     }
 }
 
@@ -161,6 +159,13 @@ impl Tree {
     pub fn shared(&self, ix: usize) -> u64 {
         let shared = self.shared.get_or_init(|| Shared::build(self));
         shared.by_node.get(&ix).copied().unwrap_or(0).min(self.nodes[ix].size)
+    }
+
+    /// All attached copies of this pure clone found by the current scan.
+    pub fn clone_copies(&self, ix: usize) -> &[usize] {
+        let Some(node) = self.nodes.get(ix).filter(|node| node.clone != 0 && node.parent.is_some()) else { return &[] };
+        let shared = self.shared.get_or_init(|| Shared::build(self));
+        shared.families.get(&node.clone).map(Vec::as_slice).unwrap_or(&[])
     }
 
     /// What `ix` takes on disk with shared clone blocks counted once. A file is its
@@ -1500,7 +1505,10 @@ mod tests {
     fn removing_a_clone_updates_sharing() {
         let mut tree = clone_tree();
         assert_eq!(tree.shared(0), 200);
+        assert_eq!(tree.clone_copies(6), &[2, 5, 6]);
         tree.remove(6);
+        assert!(tree.clone_copies(6).is_empty());
+        assert_eq!(tree.clone_copies(5), &[2, 5]);
         assert_eq!((tree.shared(4), tree.unique(4)), (0, 100));
         assert_eq!((tree.shared(0), tree.unique(0)), (100, 210));
     }

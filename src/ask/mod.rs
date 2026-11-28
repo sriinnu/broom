@@ -119,7 +119,12 @@ impl AskContext {
     /// The folder in view relative to the root, or nothing.
     pub fn focused_name(&self) -> Option<String> {
         let f = self.focused.as_ref()?;
-        Some(f.strip_prefix(&self.scan_root).unwrap_or(f).to_string_lossy().into_owned())
+        if let Ok(relative) = f.strip_prefix(&self.scan_root) {
+            return Some(relative.to_string_lossy().into_owned());
+        }
+        let root = self.scan_root.canonicalize().ok()?;
+        let focused = f.canonicalize().ok()?;
+        Some(focused.strip_prefix(root).ok()?.to_string_lossy().into_owned())
     }
 }
 
@@ -1150,4 +1155,13 @@ mod tests {
             Err(error) => println!("resolve fell back: {error}"),
         }
     }
+}
+
+#[cfg(test)]
+#[test]
+fn reader_gets_only_focus_relative_to_the_scan() {
+    let mut ctx = AskContext { scan_root: "/scan".into(), focused: Some("/scan/projects/sample".into()) };
+    assert_eq!(ctx.focused_name().as_deref(), Some("projects/sample"));
+    ctx.focused = Some("/elsewhere/private".into());
+    assert_eq!(ctx.focused_name(), None);
 }

@@ -16,7 +16,7 @@ pub(super) fn render_help() -> impl IntoElement {
         ("And the rings?", "Each ring is one level of folders, biggest at twelve o'clock going clockwise. The centre takes you up one level, a slice zooms in, and the list mirrors the chart when it's sorted by size."),
         ("What grew? Duplicates?", "Each scan is remembered (folder sizes only, kept a week), so the next scan of the same place shows what grew: +1.2 GB in amber, shrinkage in green. Duplicate files appear as a finding once the scan is done: identical copies, compared byte for byte, of your own files only. APFS clones and hard links are left out, since deleting them frees nothing."),
         ("When does the space come back?", "When the Trash is emptied. File › Empty Trash… (⇧⌘⌫), or the button on the banner after a cleanup, empties it from Broom: it says what's there first, and that this can't be undone, then shows how much the disk actually got back. Locked items stay in the Trash."),
-        ("Merge as Clones?", "The Duplicate files finding can merge instead of delete: each extra copy becomes an APFS clone of the one that stays. Both files stay where they were, with their own names, dates and tags, but the bytes are stored once, so the space comes back with nothing deleted. Edit one later and only the changes take new space."),
+        ("Merge as Clones?", "Each extra copy becomes an APFS clone at the same location, with its own name, dates and tags. The original goes to the Trash so you can still recover it. Empty the Trash to reclaim the space."),
         ("Getting around", "Sort the list by Size, Name or Modified; click the same one again to flip it. Drag a column's edge to resize it, double-click to reset. ⇧-click takes a range of rows, ⌘- or ⌃-click adds or removes one and ⌘A takes them all; space and ⌘C then act on all of them, and esc lets go. Settings can add date modified and date created to the list. ⌘[ and ⌘] step back and forward through the folders you've visited, ⌥⌘S hides the sidebar. ⌘C copies the selected row's path (or the open folder's), and hovering a path that's cut short shows all of it. A folder's date is when something directly inside it was added or removed, as in Finder."),
     ];
     div()
@@ -374,12 +374,19 @@ impl Broom {
                 let savings = if pending {
                     " · working out savings…".to_string()
                 } else if safe > 0 {
-                    format!(" · {} safe to delete", format_size(safe))
+                    format!(" · {} in cleanup suggestions", format_size(safe))
                 } else {
                     String::new()
                 };
                 if let Some(freed) = &r.freed {
-                    return d.child(render_freed_banner(r, freed, still, cx).into_any_element());
+                    return d.child(render_freed_banner(r, freed, still, !self.last_trashed.is_empty(), cx).into_any_element());
+                }
+                let mut coverage = String::new();
+                if tree.errors > 0 {
+                    coverage.push_str(&format!(" · {} entries couldn’t be read", format_count(tree.errors)));
+                }
+                if tree.cloud_only > 0 {
+                    coverage.push_str(&format!(" · {} cloud-only folders skipped", format_count(tree.cloud_only)));
                 }
                 let (headline, detail) = match &r.banner_text {
                     // A line break splits the bold part from the quiet detail.
@@ -387,7 +394,7 @@ impl Broom {
                         Some((head, detail)) => (head.to_string(), detail.to_string()),
                         None => (text.clone(), String::new()),
                     },
-                    None => (format!("Scan complete in {:.1} s", r.elapsed.as_secs_f32()), format!("{} accounted for{savings}", format_size(total))),
+                    None => (format!("Scan complete in {:.1} s", r.elapsed.as_secs_f32()), format!("{} scanned{savings}{coverage}", format_size(total))),
                 };
                 d.child(
                     div().absolute().top_4().left_0().right_0().px_4().flex().justify_center().child(
@@ -410,7 +417,7 @@ impl Broom {
                             .child(div().flex_none().text_color(rgb(colors().safe)).font_weight(FontWeight::BOLD).child("✓"))
                             .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child(headline))
                             .when(!detail.is_empty(), |d| d.child(div().min_w_0().truncate().text_xs().text_color(rgb(colors().muted)).child(detail)))
-                            .when(!r.last_trashed.is_empty(), |d| {
+                            .when(!self.last_trashed.is_empty(), |d| {
                                 d.child(
                                     button("put-back", "Put Back")
                                         .flex_none()
@@ -457,7 +464,7 @@ fn paint_dust(window: &mut Window, geometry: &Geometry, puff: &delight::Puff) {
 /// The banner after a move to the Trash: the freed size counting up, what
 /// it's worth in everyday things, the one useful reminder, and a word when the
 /// lifetime tally passes a milestone.
-fn render_freed_banner(r: &Results, freed: &Freed, still: bool, cx: &mut Context<Broom>) -> impl IntoElement {
+fn render_freed_banner(r: &Results, freed: &Freed, still: bool, can_put_back: bool, cx: &mut Context<Broom>) -> impl IntoElement {
     let elapsed = r.banner.map(clock::since).unwrap_or(delight::COUNT_UP);
     let shown = if still { freed.bytes } else { delight::counted(freed.bytes, elapsed) };
     // Only the digits are monospaced; the unit reads with the sentence.
@@ -511,7 +518,7 @@ fn render_freed_banner(r: &Results, freed: &Freed, still: bool, cx: &mut Context
                         d.child(div().text_xs().font_weight(FontWeight::MEDIUM).text_color(rgb(colors().safe)).child(delight::milestone_line(m)))
                     }),
             )
-            .when(!r.last_trashed.is_empty(), |d| {
+            .when(can_put_back, |d| {
                 d.child(
                     button("put-back", "Put Back")
                         .flex_none()

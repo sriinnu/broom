@@ -10,6 +10,9 @@
 //! of the queue one by one as the bin fills, and the lid simply shuts.
 
 use std::cell::Cell;
+use std::ffi::{CStr, CString, OsStr};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -33,7 +36,10 @@ pub fn send(paths: &[PathBuf]) -> Result<(), String> {
 
 fn send_guarded(paths: &[PathBuf], protected: &[PathBuf]) -> Result<(), String> {
     let (paths, refused) = crate::protect::sort_out(paths, protected);
-    let sent = send_unprotected(&paths);
+    report_refused(send_unprotected(&paths), &refused)
+}
+
+fn report_refused(sent: Result<(), String>, refused: &[crate::protect::Refused]) -> Result<(), String> {
     if refused.is_empty() {
         return sent;
     }
@@ -76,59 +82,75 @@ fn send_unprotected(paths: &[PathBuf]) -> Result<(), String> {
     }
 }
 
-/// `send`, and where each path landed in the home Trash, so it can be put
-/// back. Neither Finder nor NSFileManager (through the `trash` crate) says,
-/// so this lists `~/.Trash` before and after and matches the new entries by
-/// name: the same name, or Finder's "name 18.33.12" (before any extension)
-/// when the Trash already held one. Paths on other volumes go to that
-/// volume's own Trash and simply get no entry.
-pub fn send_tracked(paths: &[PathBuf]) -> (Result<(), String>, Vec<(PathBuf, PathBuf)>) {
-    let Some(trash) = std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".Trash")) else {
-        return (send(paths), Vec::new());
-    };
-    let list = || -> std::collections::HashSet<std::ffi::OsString> {
-        std::fs::read_dir(&trash).map(|dir| dir.filter_map(|e| e.ok().map(|e| e.file_name())).collect()).unwrap_or_default()
-    };
-    let before = list();
-    let result = send(paths);
-    let mut new: Vec<String> = list().difference(&before).filter_map(|n| n.to_str().map(str::to_owned)).collect();
-    let mut landed = Vec::new();
-    for path in paths {
-        if path.symlink_metadata().is_ok() {
-            continue; // still where it was: it never went
-        }
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
-        let (stem, ext) = match path.extension().and_then(|e| e.to_str()) {
-            Some(ext) => (&name[..name.len() - ext.len() - 1], Some(ext)),
-            None => (name, None),
-        };
-        let renamed = |n: &str| {
-            let rest = match ext {
-                Some(ext) => n.strip_suffix(ext).and_then(|n| n.strip_suffix('.')),
-                None => Some(n),
-            };
-            rest.and_then(|r| r.strip_prefix(stem)).is_some_and(|r| r.starts_with(' '))
-        };
-        let found = new.iter().position(|n| n == name).or_else(|| new.iter().position(|n| renamed(n)));
-        if let Some(i) = found {
-            landed.push((path.clone(), trash.join(new.swap_remove(i))));
-        }
-    }
-    (result, landed)
+/// A receipt for the item macOS moved, independent of its name or volume.
+#[derive(Clone)]
+pub(crate) struct TrashReceipt {
+    original: PathBuf,
+    destination: PathBuf,
+    identity: (u64, u64),
 }
 
-/// Move what `send_tracked` trashed back where it came from. Skips anything
-/// whose old place is taken or whose folder is gone; returns what moved.
-pub fn put_back(landed: &[(PathBuf, PathBuf)]) -> Vec<PathBuf> {
-    landed
-        .iter()
-        .filter(|(original, in_trash)| {
-            original.symlink_metadata().is_err()
-                && original.parent().is_some_and(Path::is_dir)
-                && std::fs::rename(in_trash, original).is_ok()
-        })
-        .map(|(original, _)| original.clone())
-        .collect()
+pub(crate) struct TrashMove {
+    pub(crate) original: PathBuf,
+    pub(crate) receipt: Option<TrashReceipt>,
+}
+
+/// Record every successful move, even if macOS doesn't provide a restore URL.
+pub(crate) fn send_tracked(paths: &[PathBuf]) -> (Result<(), String>, Vec<TrashMove>) {
+    let (paths, refused) = crate::protect::sort_out(paths, &crate::protect::current());
+    if paths.is_empty() {
+        return (report_refused(Ok(()), &refused), Vec::new());
+    }
+    objc2::rc::autoreleasepool(|_| {
+        let manager = objc2_foundation::NSFileManager::defaultManager();
+        let mut errors = Vec::new();
+        let mut moves = Vec::new();
+        for path in paths {
+            let moved = (|| -> Result<Option<TrashReceipt>, String> {
+                let meta = path.symlink_metadata().map_err(|error| error.to_string())?;
+                let url = crate::file_url(&path, meta.is_dir()).ok_or("invalid path")?;
+                let mut destination = None;
+                manager.trashItemAtURL_resultingItemURL_error(&url, Some(&mut destination))
+                    .map_err(|error| error.to_string())?;
+                Ok(destination.map(|url| {
+                    // The representation is valid while the retained URL is alive.
+                    let bytes = unsafe { CStr::from_ptr(url.fileSystemRepresentation().as_ptr()) }.to_bytes();
+                    TrashReceipt {
+                        original: path.clone(),
+                        destination: PathBuf::from(OsStr::from_bytes(bytes)),
+                        identity: (meta.dev(), meta.ino()),
+                    }
+                }))
+            })();
+            match moved {
+                Ok(receipt) => moves.push(TrashMove { original: path, receipt }),
+                Err(error) => errors.push(format!("{}: {error}", path.display())),
+            }
+        }
+        let moved = if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) };
+        (report_refused(moved, &refused), moves)
+    })
+}
+
+/// Only restore the recorded item, and never overwrite a path created since the move.
+pub(crate) fn put_back(receipts: Vec<TrashReceipt>) -> (Vec<PathBuf>, Vec<TrashReceipt>) {
+    let (restored, remaining): (Vec<_>, _) = receipts.into_iter().partition(restore_one);
+    (restored.into_iter().map(|receipt| receipt.original).collect(), remaining)
+}
+
+fn restore_one(receipt: &TrashReceipt) -> bool {
+    let move_recorded_item = || -> Option<()> {
+        let meta = receipt.destination.symlink_metadata().ok()?;
+        if (meta.dev(), meta.ino()) != receipt.identity {
+            return None;
+        }
+        let from = CString::new(receipt.destination.as_os_str().as_bytes()).ok()?;
+        let to = CString::new(receipt.original.as_os_str().as_bytes()).ok()?;
+        // Both paths are NUL-terminated. RENAME_EXCL checks the destination atomically.
+        let moved = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
+        (moved == 0).then_some(())
+    };
+    move_recorded_item().is_some()
 }
 
 // ---------------------------------------------------------------------------
@@ -828,6 +850,39 @@ mod tests {
         assert!(keep.exists(), "still where it was");
         assert!(send_guarded(&[], &list).is_ok());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn put_back_uses_the_recorded_item_and_never_overwrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("report.pdf");
+        let destination = dir.path().join("report 18.33.12.pdf");
+        std::fs::write(&destination, "trashed report").unwrap();
+        let meta = destination.symlink_metadata().unwrap();
+        let receipt = TrashReceipt { original: original.clone(), destination: destination.clone(), identity: (meta.dev(), meta.ino()) };
+
+        std::fs::write(&original, "replacement").unwrap();
+        let (restored, pending) = put_back(vec![receipt]);
+        assert!(restored.is_empty());
+        assert_eq!(pending.len(), 1);
+        assert_eq!(std::fs::read_to_string(&original).unwrap(), "replacement");
+        std::fs::remove_file(&original).unwrap();
+
+        let unrelated = dir.path().join("unrelated.pdf");
+        std::fs::write(&unrelated, "unrelated report").unwrap();
+        std::fs::rename(&destination, &original).unwrap();
+        std::fs::rename(&unrelated, &destination).unwrap();
+        std::fs::rename(&original, &unrelated).unwrap();
+        let (restored, pending) = put_back(pending);
+        assert!(restored.is_empty());
+        assert_eq!(pending.len(), 1);
+        assert!(!original.exists());
+
+        std::fs::rename(&unrelated, &destination).unwrap();
+        let (restored, pending) = put_back(pending);
+        assert_eq!(restored, vec![original.clone()]);
+        assert!(pending.is_empty());
+        assert_eq!(std::fs::read_to_string(&original).unwrap(), "trashed report");
     }
 
     fn temp(name: &str) -> PathBuf {

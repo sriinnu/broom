@@ -22,7 +22,7 @@ required again.
 
 ## Cutting a release
 
-1. Bump `version` in `Cargo.toml` on a branch, open a PR, merge it.
+1. Bump the package version in `Cargo.toml` and `Cargo.lock` on a branch, update the changelog, and merge through a PR after CI passes.
 2. On `main`, create a signed, annotated tag and push it:
 
        git switch main && git pull
@@ -33,7 +33,7 @@ required again.
    commits, so the Titan key needs a touch.
 3. The Release workflow refuses to run unless GitHub verifies the tag's
    signature and the tag is on `main`. It then builds `Broom.app` and the
-   DMG, signs and notarizes them when the Developer ID secrets are set,
+   DMG, requires Developer ID signatures and a validated notarization ticket,
    writes `SHA256SUMS`, attests build provenance (public repositories only),
    and publishes a GitHub release from the tag with the DMG and checksums.
 4. Bump the Homebrew cask: in [sriinnu/homebrew-tap](https://github.com/sriinnu/homebrew-tap),
@@ -58,8 +58,8 @@ Verify a download:
 
 ## Secrets
 
-All optional; without them the DMG is ad hoc signed and runs only on the Mac
-that built it.
+All are required by CI. The local bundle command can still build an ad-hoc
+signed app for testing on the build Mac.
 
 | Secret | What |
 |---|---|

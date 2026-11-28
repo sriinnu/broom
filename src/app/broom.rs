@@ -40,6 +40,7 @@ pub struct Broom {
     /// Right-click menu, if one is open. Dropped whenever the node it points at is
     /// detached or the scan changes underneath it.
     pub(super) context_menu: Option<ContextMenu>,
+    pub(super) clone_picker: Option<ClonePicker>,
     /// The open modal card (Help, About), if any.
     pub(super) modal: Option<PanelState>,
     /// The Settings window's state, while that window is open.
@@ -59,6 +60,11 @@ pub struct Broom {
     /// True while a native sheet or open panel has the window (trash confirm,
     /// folder picker). Our own modal must not open underneath those.
     pub(super) busy: bool,
+    /// A move to Trash or a restore is in flight.
+    pub(super) trash_working: bool,
+    /// The last cleanup's undo receipts and remaining lifetime tally credit.
+    pub(super) last_trashed: Vec<trashcan::TrashReceipt>,
+    pub(super) last_trash_credit: u64,
     /// What the user has chosen. Loaded once at startup and written back on
     /// every change; the live copy is the truth while the app runs.
     pub(super) settings: Settings,
@@ -121,6 +127,8 @@ impl Render for Broom {
             .on_action(cx.listener(Self::select_prev))
             .on_action(cx.listener(Self::open_selected))
             .on_action(cx.listener(Self::toggle_selected))
+            .on_action(cx.listener(Self::quick_look_selected))
+            .on_action(cx.listener(Self::show_selected_clone_peers))
             .on_action(cx.listener(Self::close_review))
             .on_action(cx.listener(Self::open_empty_trash))
             .on_action(cx.listener(Self::close_empty_trash))
@@ -137,6 +145,7 @@ impl Render for Broom {
             .on_action(cx.listener(Self::toggle_rail))
             .on_action(cx.listener(Self::toggle_cleanup))
             .on_action(cx.listener(Self::close_window))
+            .on_action(cx.listener(|this, _: &PutBackLastCleanup, _, cx| this.put_back(cx)))
             .on_action(cx.listener(Self::minimize))
             .on_action(cx.listener(Self::zoom))
             .on_action(cx.listener(Self::select_all))
@@ -216,6 +225,7 @@ impl Broom {
             // (element-state cache), and Broom owns this entity for the app's life anyway.
             query: cx.new(|cx| EditableTextState::new(StringStorage::default(), cx)),
             context_menu: None,
+            clone_picker: None,
             modal: None,
             prefs: None,
             modal_focus: cx.focus_handle(),
@@ -225,6 +235,9 @@ impl Broom {
             _appearance_watch: None,
             settings_epoch: 0,
             busy: false,
+            trash_working: false,
+            last_trashed: Vec::new(),
+            last_trash_credit: 0,
             settings,
             settings_salvaged: salvaged,
         };

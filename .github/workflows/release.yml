@@ -1,6 +1,6 @@
 # A release is a signed, annotated tag `vX.Y.Z` on main. The job refuses to run
 # for a tag GitHub can't verify or one that isn't on main, builds Broom.app and
-# the DMG, signs and notarizes them when the Developer ID secrets are set,
+# the DMG, requires Developer ID signing, notarization and a stapled ticket,
 # writes SHA256SUMS, attests the build's provenance, and publishes a GitHub
 # release from the tag. Actions are pinned to commits; Dependabot bumps them.
 name: Release
@@ -41,24 +41,31 @@ jobs:
         run: |
           v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
           [[ "${GITHUB_REF_NAME}" == "v${v}" ]] || { echo "::error::tag ${GITHUB_REF_NAME} != Cargo.toml ${v}"; exit 1; }
-      - name: Import the Developer ID certificate (when configured)
+      - name: Import the Developer ID certificate
         env:
           P12_BASE64: ${{ secrets.DEVELOPER_ID_P12 }}
           P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
         run: |
-          if [ -z "$P12_BASE64" ]; then echo "no Developer ID certificate configured; the DMG will be ad hoc signed"; exit 0; fi
+          set -euo pipefail
+          [[ -n "$P12_BASE64" && -n "$P12_PASSWORD" ]] || { echo "::error::Missing Developer ID certificate or password"; exit 1; }
+          umask 077
+          trap 'rm -f "$RUNNER_TEMP/cert.p12"' EXIT
           echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
           security create-keychain -p ci build.keychain
           # A new keychain locks itself after five idle minutes, and the build takes
           # longer than that: codesign would then wait forever on an unlock prompt.
           security set-keychain-settings build.keychain
           security unlock-keychain -p ci build.keychain
-          security list-keychains -d user -s build.keychain $(security list-keychains -d user | tr -d '"')
+          keychains=(build.keychain)
+          while IFS= read -r keychain; do
+            keychain=${keychain#*\"}
+            keychains+=("${keychain%\"}")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "${keychains[@]}"
           security default-keychain -s build.keychain
           security import "$RUNNER_TEMP/cert.p12" -k build.keychain -P "$P12_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci build.keychain >/dev/null
-          rm "$RUNNER_TEMP/cert.p12"
-      - name: Store notary credentials (when configured)
+      - name: Store notary credentials
         # An App Store Connect API key (Team key): the .p8 base64-encoded, its key ID
         # and the issuer ID.
         env:
@@ -66,17 +73,25 @@ jobs:
           KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
           ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
         run: |
-          if [ -z "$API_KEY_BASE64" ]; then echo "no notary credentials configured; skipping notarization"; exit 0; fi
+          set -euo pipefail
+          [[ -n "$API_KEY_BASE64" && -n "$KEY_ID" && -n "$ISSUER_ID" ]] || { echo "::error::Missing App Store Connect notarization credentials"; exit 1; }
+          umask 077
+          trap 'rm -f "$RUNNER_TEMP/notary.p8"' EXIT
           echo "$API_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/notary.p8"
           xcrun notarytool store-credentials broom-notary --key "$RUNNER_TEMP/notary.p8" --key-id "$KEY_ID" --issuer "$ISSUER_ID"
-          rm "$RUNNER_TEMP/notary.p8"
           echo "BROOM_NOTARY_PROFILE=broom-notary" >> "$GITHUB_ENV"
       - name: Build, sign and notarize
         env:
           BROOM_SIGN_ID: ${{ secrets.DEVELOPER_ID_SIGN_ID }}
         run: |
-          [ -z "$BROOM_SIGN_ID" ] || security unlock-keychain -p ci build.keychain
+          set -euo pipefail
+          [[ "$BROOM_SIGN_ID" == "Developer ID Application: "* ]] || { echo "::error::A Developer ID Application signing identity is required"; exit 1; }
+          [[ -n "${BROOM_NOTARY_PROFILE:-}" ]] || { echo "::error::A notarization profile is required"; exit 1; }
+          security unlock-keychain -p ci build.keychain
           scripts/bundle.sh --dmg
+          codesign --verify --deep --strict -R='anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists' dist/Broom.app
+          codesign --verify --strict -R='anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists' dist/Broom.dmg
+          xcrun stapler validate dist/Broom.dmg
       - name: Checksums
         run: |
           mv dist/Broom.dmg "dist/Broom-${GITHUB_REF_NAME#v}.dmg"
